@@ -1,4 +1,9 @@
 fastapi==0.139.2
 httpx==0.28.1
+openai>=1.100.0,<2
 python-multipart==0.0.20
+SQLAlchemy==2.0.43
+pgvector==0.4.1
+alembic==1.16.5
+bullmq[postgres]==3.0.4
 uvicorn[standard]==0.51.0

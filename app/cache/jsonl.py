@@ -32,6 +32,10 @@ class JsonlCache:
             return None
         return self._data[key]
 
+    def items(self) -> list[tuple[str, Any]]:
+        """Return the latest value for every legacy key for an idempotent DB backfill."""
+        return list(self._data.items())
+
     def set(self, key: str, value: Any) -> None:
         self._data[key] = value
         self._path.parent.mkdir(parents=True, exist_ok=True)

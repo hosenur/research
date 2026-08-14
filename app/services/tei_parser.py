@@ -5,21 +5,31 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from app.schemas.paper import (
+    BoundingBox,
     CSLDate,
     CSLItem,
     CSLName,
+    CitationAnchor,
+    CitationConfidence,
+    CitationForm,
+    CitationItem,
     CitationNode,
+    CitationResolution,
+    CitationResolutionMethod,
+    CitationResolutionStatus,
+    ExtractionPointer,
     Paper,
     Paragraph,
     ParagraphNode,
     Reference,
     Section,
+    SentenceSpan,
     TextNode,
 )
 from app.services.citation_utils import (
     AuthorYearMention,
     arxiv_year,
-    detect_citation_style,
+    classify_citation_style,
     extract_cite_keys,
     extract_year_label,
     is_affiliation_author,
@@ -64,6 +74,76 @@ def element_text(element: ET.Element | None) -> str:
     return clean_text("".join(element.itertext()))
 
 
+def parse_coordinates(value: str | None) -> list[BoundingBox]:
+    boxes: list[BoundingBox] = []
+    for raw_box in (value or "").split(";"):
+        parts = [part.strip() for part in raw_box.split(",")]
+        if len(parts) != 5:
+            continue
+        try:
+            page = int(parts[0])
+            x, y, width, height = (float(part) for part in parts[1:])
+            boxes.append(
+                BoundingBox(
+                    page=page,
+                    x=x,
+                    y=y,
+                    width=width,
+                    height=height,
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return boxes
+
+
+def extraction_pointer(element: ET.Element | None) -> ExtractionPointer | None:
+    if element is None:
+        return None
+    grobid_id = element.get(XML_ID)
+    coordinates = parse_coordinates(element.get("coords"))
+    if not grobid_id and not coordinates:
+        return None
+    return ExtractionPointer(grobid_id=grobid_id, coordinates=coordinates)
+
+
+def paragraph_projection(nodes: list[ParagraphNode]) -> str:
+    return "".join(
+        node.text if isinstance(node, TextNode) else node.raw_text
+        for node in nodes
+    )
+
+
+def parse_sentence_spans(
+    paragraph: ET.Element,
+    nodes: list[ParagraphNode],
+    paragraph_id: str,
+) -> list[SentenceSpan]:
+    projection = paragraph_projection(nodes)
+    cursor = 0
+    spans: list[SentenceSpan] = []
+    for index, sentence in enumerate(paragraph.findall(".//tei:s", NS), start=1):
+        sentence_text = element_text(sentence)
+        if not sentence_text:
+            continue
+        start = projection.find(sentence_text, cursor)
+        if start < 0:
+            start = projection.find(sentence_text)
+        if start < 0:
+            continue
+        end = start + len(sentence_text)
+        spans.append(
+            SentenceSpan(
+                id=f"{paragraph_id}-sentence-{index}",
+                start_offset=start,
+                end_offset=end,
+                source=extraction_pointer(sentence),
+            )
+        )
+        cursor = end
+    return spans
+
+
 def first_text(element: ET.Element, paths: list[str]) -> str | None:
     for path in paths:
         value = element_text(element.find(path, NS))
@@ -81,12 +161,14 @@ def parse_tei(xml: bytes) -> Paper:
     3. Walk body ``div``s into sections, skipping figure/prompt dumps.
     4. Split paragraphs into text vs bibliography ``ref`` nodes. Special
        tokens such as ``[CLS]`` stay text. Adjacent GROBID cite fragments
-       are merged and stray brackets are pulled back onto the cite.
+       are merged, stray brackets are pulled back onto the cite, and each
+       occurrence receives a stable ID plus paragraph offsets.
     5. Keep every real bibliography entry as CSL-JSON, recover missing
        title/author/date from raw text, and drop acknowledgements or
        examples that GROBID parked in ``listBibl``.
-    6. Link leftover author-year and Harvard-key cites to those entries.
-       Anything still unmatched stays visible as ``unresolvedFragments``.
+    6. Link leftover author-year and Harvard-key cites to those entries while
+       retaining resolution method, confidence, ambiguous candidates, and
+       anything still unmatched in ``unresolvedFragments``.
     """
     if b"<!DOCTYPE" in xml.upper() or b"<!ENTITY" in xml.upper():
         raise TEIParseError("DTD and entity declarations are not accepted.")
@@ -123,11 +205,13 @@ def parse_tei(xml: bytes) -> Paper:
         if isinstance(node, CitationNode)
     ]
     known_reference_ids = {reference.id for reference in references}
+    mark_unresolved_source_ids(citation_nodes, known_reference_ids)
     cited_reference_ids = {
         reference_id
         for node in citation_nodes
-        for reference_id in node.reference_ids
+        for reference_id in node.source_ids
     }
+    unresolved_reference_ids = sorted(cited_reference_ids - known_reference_ids)
     unresolved_fragments = [
         fragment
         for node in citation_nodes
@@ -143,6 +227,22 @@ def parse_tei(xml: bytes) -> Paper:
         warnings.append(
             f"{len(unresolved_fragments)} in-text citation fragments could not be linked."
         )
+    ambiguous_citations = sum(
+        1 for node in citation_nodes if node.resolution.status == "ambiguous"
+    )
+    if ambiguous_citations:
+        warnings.append(
+            f"{ambiguous_citations} in-text citations have multiple possible bibliography matches."
+        )
+    if unresolved_reference_ids:
+        warnings.append(
+            f"{len(unresolved_reference_ids)} citation targets do not have a parsed bibliography entry."
+        )
+
+    style_detection = classify_citation_style(
+        [node.raw_text for node in citation_nodes],
+        [reference.raw_text for reference in references],
+    )
 
     return Paper(
         title=title,
@@ -150,10 +250,13 @@ def parse_tei(xml: bytes) -> Paper:
         authors=authors,
         year=year,
         identifiers=identifiers,
-        citation_style=detect_citation_style([node.raw_text for node in citation_nodes]),
+        citation_style=(
+            None if style_detection.family == "unknown" else style_detection.family
+        ),
+        citation_style_detection=style_detection,
         sections=sections,
         references=references,
-        unresolved_reference_ids=sorted(cited_reference_ids - known_reference_ids),
+        unresolved_reference_ids=unresolved_reference_ids,
         warnings=warnings,
     )
 
@@ -224,17 +327,30 @@ def parse_sections(body: ET.Element | None) -> list[Section]:
             if not nodes:
                 continue
             paragraph_number += 1
-            paragraph_id = paragraph_element.get(XML_ID) or f"paragraph-{paragraph_number}"
-            paragraphs.append(Paragraph(id=paragraph_id, nodes=nodes))
+            paragraph_id = f"paragraph-{paragraph_number}"
+            assign_citation_metadata(nodes, paragraph_id)
+            paragraphs.append(
+                Paragraph(
+                    id=paragraph_id,
+                    nodes=nodes,
+                    sentences=parse_sentence_spans(
+                        paragraph_element,
+                        nodes,
+                        paragraph_id,
+                    ),
+                    source=extraction_pointer(paragraph_element),
+                )
+            )
 
         if paragraphs and not is_figure_or_prompt_section(title):
-            section_id = container.get(XML_ID) or f"section-{len(sections) + 1}"
+            section_id = f"section-{len(sections) + 1}"
             sections.append(
                 Section(
                     id=section_id,
                     title=title,
                     number=number,
                     paragraphs=paragraphs,
+                    source=extraction_pointer(container),
                 )
             )
 
@@ -278,8 +394,25 @@ def parse_paragraph_nodes(paragraph: ET.Element) -> list[ParagraphNode]:
                     nodes.append(
                         CitationNode(
                             raw_text=raw_text,
-                            reference_ids=reference_ids,
+                            items=[
+                                CitationItem(
+                                    source_id=reference_id,
+                                    resolution_method="grobid-target",
+                                    confidence="high",
+                                )
+                                for reference_id in reference_ids
+                            ],
+                            resolution=CitationResolution(
+                                status="resolved" if reference_ids else "unresolved",
+                                confidence="high" if reference_ids else "low",
+                                methods=["grobid-target"] if reference_ids else ["none"],
+                            ),
                             unresolved_fragments=[] if reference_ids else [raw_text],
+                            source_spans=[
+                                pointer
+                                for pointer in [extraction_pointer(child)]
+                                if pointer is not None
+                            ],
                         )
                     )
             else:
@@ -318,10 +451,15 @@ def normalize_nodes(nodes: list[ParagraphNode]) -> list[ParagraphNode]:
         if normalized and isinstance(normalized[-1], CitationNode):
             previous = normalized[-1]
             previous.raw_text = clean_text(f"{previous.raw_text} {node.raw_text}")
-            previous.reference_ids = list(
-                dict.fromkeys([*previous.reference_ids, *node.reference_ids])
-            )
+            existing_source_ids = set(previous.source_ids)
+            for item in node.items:
+                if item.source_id not in existing_source_ids:
+                    previous.items.append(item)
+                    existing_source_ids.add(item.source_id)
             previous.unresolved_fragments.extend(node.unresolved_fragments)
+            previous.warnings.extend(node.warnings)
+            previous.source_spans.extend(node.source_spans)
+            refresh_citation_resolution(previous)
         else:
             normalized.append(node)
 
@@ -337,6 +475,114 @@ def normalize_nodes(nodes: list[ParagraphNode]) -> list[ParagraphNode]:
         for node in normalized
         if not isinstance(node, TextNode) or bool(node.text)
     ]
+
+
+def assign_citation_metadata(nodes: list[ParagraphNode], paragraph_id: str) -> None:
+    """Assign deterministic IDs and offsets in the normalized paragraph projection."""
+    cursor = 0
+    citation_number = 0
+    for node in nodes:
+        if isinstance(node, TextNode):
+            cursor += len(node.text)
+            continue
+
+        citation_number += 1
+        node.id = f"{paragraph_id}-citation-{citation_number}"
+        node.anchor = CitationAnchor(
+            paragraph_id=paragraph_id,
+            start_offset=cursor,
+            end_offset=cursor + len(node.raw_text),
+        )
+        node.form = infer_citation_form(node.raw_text)
+        refresh_citation_resolution(node)
+        cursor += len(node.raw_text)
+
+
+def infer_citation_form(raw_text: str) -> CitationForm:
+    value = raw_text.strip()
+    if re.fullmatch(r"\[\s*\d+(?:\s*[-–,;]\s*\d+)*\s*\][.,;:]?", value):
+        return "numeric"
+    if value.startswith("("):
+        return "parenthetical"
+    if parse_author_year_mentions(value):
+        return "narrative"
+    return "unknown"
+
+
+def append_citation_item(
+    node: CitationNode,
+    source_id: str,
+    method: CitationResolutionMethod,
+    confidence: CitationConfidence,
+) -> None:
+    if source_id in node.source_ids:
+        return
+    node.items.append(
+        CitationItem(
+            source_id=source_id,
+            resolution_method=method,
+            confidence=confidence,
+        )
+    )
+
+
+def refresh_citation_resolution(node: CitationNode) -> None:
+    unresolved_source_ids = list(dict.fromkeys(node.resolution.unresolved_source_ids))
+    candidate_source_ids = list(dict.fromkeys(node.resolution.candidate_source_ids))
+    unresolved_fragments = [fragment for fragment in node.unresolved_fragments if fragment.strip()]
+    resolved_items = [
+        item for item in node.items if item.source_id not in unresolved_source_ids
+    ]
+
+    if resolved_items and (unresolved_fragments or unresolved_source_ids or candidate_source_ids):
+        status: CitationResolutionStatus = "partial"
+    elif resolved_items:
+        status = "resolved"
+    elif candidate_source_ids:
+        status = "ambiguous"
+    else:
+        status = "unresolved"
+
+    confidence_rank = {"low": 0, "medium": 1, "high": 2}
+    if status == "resolved" and resolved_items:
+        confidence: CitationConfidence = min(
+            (item.confidence for item in resolved_items),
+            key=confidence_rank.__getitem__,
+        )
+    elif status == "partial":
+        confidence = "medium" if resolved_items else "low"
+    else:
+        confidence = "low"
+
+    methods = list(
+        dict.fromkeys(
+            item.resolution_method for item in node.items if item.resolution_method != "none"
+        )
+    )
+    node.unresolved_fragments = list(dict.fromkeys(unresolved_fragments))
+    node.resolution = CitationResolution(
+        status=status,
+        confidence=confidence,
+        methods=methods or ["none"],
+        candidate_source_ids=candidate_source_ids,
+        unresolved_source_ids=unresolved_source_ids,
+    )
+
+
+def mark_unresolved_source_ids(
+    citation_nodes: list[CitationNode],
+    known_source_ids: set[str],
+) -> None:
+    for node in citation_nodes:
+        missing = [source_id for source_id in node.source_ids if source_id not in known_source_ids]
+        node.resolution.unresolved_source_ids = missing
+        if missing:
+            node.warnings.append(
+                "Citation targets bibliography entries that were not parsed: "
+                + ", ".join(missing)
+                + "."
+            )
+        refresh_citation_resolution(node)
 
 
 def expand_citation_boundaries(nodes: list[ParagraphNode]) -> None:
@@ -445,6 +691,7 @@ def parse_references(root: ET.Element) -> tuple[list[Reference], int]:
                 status=reference_status,
                 raw_fields=raw_fields,
                 warnings=warnings,
+                source=extraction_pointer(bibl),
             )
         )
 
@@ -462,9 +709,9 @@ def resolve_citations(sections: list[Section], references: list[Reference]) -> N
 
 class CitationIndex:
     def __init__(self) -> None:
-        self.exact: dict[tuple[str, int, str], str] = {}
+        self.exact: dict[tuple[str, int, str], list[str]] = {}
         self.by_year: dict[tuple[str, int], list[str]] = {}
-        self.cite_keys: dict[str, str] = {}
+        self.cite_keys: dict[str, list[str]] = {}
         self.references: dict[str, Reference] = {}
 
     @classmethod
@@ -477,7 +724,9 @@ class CitationIndex:
     def add(self, reference: Reference) -> None:
         self.references[reference.id] = reference
         for key in extract_cite_keys(reference.raw_text):
-            self.cite_keys.setdefault(key, reference.id)
+            bucket = self.cite_keys.setdefault(key, [])
+            if reference.id not in bucket:
+                bucket.append(reference.id)
 
         authors = reference.csl.author if reference.csl else []
         if not authors:
@@ -501,20 +750,27 @@ class CitationIndex:
             if marker in seen:
                 continue
             seen.add(marker)
-            self.exact.setdefault((family, year, letter), reference.id)
+            exact_bucket = self.exact.setdefault((family, year, letter), [])
+            if reference.id not in exact_bucket:
+                exact_bucket.append(reference.id)
             bucket = self.by_year.setdefault((family, year), [])
             if reference.id not in bucket:
                 bucket.append(reference.id)
 
-    def lookup_mention(self, mention: AuthorYearMention) -> str | None:
+    def lookup_mention(
+        self,
+        mention: AuthorYearMention,
+    ) -> tuple[str | None, list[str]]:
         family = mention.key[0]
-        exact = self.exact.get((family, mention.year, mention.letter or ""))
-        if exact:
-            return exact
+        exact = self.exact.get((family, mention.year, mention.letter or ""), [])
+        if len(exact) == 1:
+            return exact[0], []
+        if len(exact) > 1:
+            return None, exact
         candidates = self.by_year.get((family, mention.year), [])
         if len(candidates) == 1:
-            return candidates[0]
-        return None
+            return candidates[0], []
+        return None, candidates
 
     def mention_covered(self, mention: AuthorYearMention, linked_ids: list[str]) -> bool:
         mention_tokens = {
@@ -540,34 +796,50 @@ class CitationIndex:
 
     def resolve(self, node: CitationNode) -> None:
         search_text = " ".join([node.raw_text, *node.unresolved_fragments])
-        matched_ids: list[str] = []
         unresolved: list[str] = []
+        candidate_source_ids: list[str] = []
 
         for key in extract_cite_keys(search_text):
-            reference_id = self.cite_keys.get(key)
-            if reference_id:
-                matched_ids.append(reference_id)
+            candidates = self.cite_keys.get(key, [])
+            if len(candidates) == 1:
+                append_citation_item(
+                    node,
+                    candidates[0],
+                    "harvard-key-fallback",
+                    "medium",
+                )
+            elif len(candidates) > 1:
+                candidate_source_ids.extend(candidates)
 
-        linked_ids = list(dict.fromkeys([*node.reference_ids, *matched_ids]))
+        linked_ids = node.source_ids
         mentions = parse_author_year_mentions(search_text)
         if mentions:
             for mention in mentions:
-                reference_id = self.lookup_mention(mention)
+                reference_id, candidates = self.lookup_mention(mention)
                 if reference_id:
-                    matched_ids.append(reference_id)
+                    append_citation_item(
+                        node,
+                        reference_id,
+                        "author-year-fallback",
+                        "medium",
+                    )
                     if reference_id not in linked_ids:
                         linked_ids.append(reference_id)
+                elif candidates:
+                    candidate_source_ids.extend(candidates)
+                    unresolved.append(mention.raw.rstrip(").,;"))
                 elif not self.mention_covered(mention, linked_ids):
                     unresolved.append(mention.raw.rstrip(").,;"))
-        elif not node.reference_ids:
+        elif not node.items:
             unresolved.extend(
                 fragment.strip()
                 for fragment in node.unresolved_fragments
                 if fragment.strip()
             )
 
-        node.reference_ids = list(dict.fromkeys([*node.reference_ids, *matched_ids]))
         node.unresolved_fragments = list(dict.fromkeys(unresolved))
+        node.resolution.candidate_source_ids = list(dict.fromkeys(candidate_source_ids))
+        refresh_citation_resolution(node)
 
 
 def reference_to_csl(

@@ -1,5 +1,8 @@
 import { useState } from 'react'
-import { ArrowUpRight, ChevronDown } from 'lucide-react'
+import {
+  ArrowUpRightIcon as ArrowUpRight,
+  ChevronDownIcon as ChevronDown,
+} from '@heroicons/react/24/solid'
 
 export type OpenAlexStatus = 'matched' | 'unmatched' | 'error' | 'skipped'
 
@@ -81,8 +84,7 @@ function Abstract({ text }: { text: string }) {
           {open ? 'Show less' : 'Show abstract'}
           <ChevronDown
             aria-hidden="true"
-            size={13}
-            className={`transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] ${open ? 'rotate-180' : ''}`}
+            className={`size-3.5 transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] ${open ? 'rotate-180' : ''}`}
           />
         </button>
       ) : null}
@@ -132,7 +134,7 @@ function ReferenceRow({ reference, index }: { reference: EnrichedReference; inde
               className="pressable mt-2 inline-flex items-center gap-1 text-xs font-medium text-sage outline-none hover:text-sage/80 focus-visible:ring-2 focus-visible:ring-sage/30"
             >
               Open in OpenAlex
-              <ArrowUpRight aria-hidden="true" size={13} />
+              <ArrowUpRight aria-hidden="true" className="size-3.5" />
             </a>
           ) : null}
         </>

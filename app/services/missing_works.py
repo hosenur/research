@@ -132,6 +132,22 @@ def known_work_keys(references: Iterable[Reference]) -> tuple[set[str], set[str]
     return dois, arxivs, ids, titles
 
 
+def cited_references(paper: Paper) -> list[Reference]:
+    """Return bibliography entries that have an actual in-text citation anchor.
+
+    A bibliography can legitimately contain a paper whose inline citation was
+    accidentally omitted. Treating every bibliography row as already cited
+    prevents the audit from recovering exactly that missing source.
+    """
+    cited_ids: set[str] = set()
+    for section in paper.sections:
+        for paragraph in section.paragraphs:
+            for node in paragraph.nodes:
+                if isinstance(node, CitationNode):
+                    cited_ids.update(node.source_ids)
+    return [reference for reference in paper.references if reference.id in cited_ids]
+
+
 def _lookup_bits(reference: Reference) -> tuple[str | None, str | None, str | None, int | None, str | None]:
     from app.services.openalex import reference_lookup_fields
 
@@ -167,7 +183,7 @@ class MissingWorkFinder:
 
     async def find(self, paper: Paper) -> MissingWorkReport:
         queries = extract_claims(paper)
-        dois, arxivs, ids, titles = known_work_keys(paper.references)
+        dois, arxivs, ids, titles = known_work_keys(cited_references(paper))
         findings: list[MissingWorkFinding] = []
         seen_works: set[str] = set()
         warnings: list[str] = []

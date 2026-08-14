@@ -1,4 +1,4 @@
-import { ArrowUpRight } from 'lucide-react'
+import { ArrowUpRightIcon as ArrowUpRight } from '@heroicons/react/24/solid'
 
 export interface MissingWorkJson {
   sectionId: string
@@ -65,7 +65,7 @@ export function MissingWorks({ report }: { report: MissingWorkReportJson }) {
                     className="pressable mt-2 inline-flex items-center gap-1 text-xs font-medium text-sage outline-none hover:text-sage/80 focus-visible:ring-2 focus-visible:ring-sage/30"
                   >
                     Open in OpenAlex
-                    <ArrowUpRight aria-hidden="true" size={13} />
+                    <ArrowUpRight aria-hidden="true" className="size-3.5" />
                   </a>
                 ) : null}
               </article>

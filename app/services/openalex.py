@@ -195,7 +195,7 @@ class OpenAlexEnricher:
 
     async def enrich_paper(self, paper: Paper) -> Paper:
         semaphore = asyncio.Semaphore(OPENALEX_CONCURRENCY)
-        await asyncio.gather(*(self._enrich_reference(reference, semaphore) for reference in paper.references))
+        await asyncio.gather(*(self.enrich_reference(reference, semaphore) for reference in paper.references))
 
         matched = sum(1 for reference in paper.references if reference.openalex_status == "matched")
         unmatched = sum(1 for reference in paper.references if reference.openalex_status == "unmatched")
@@ -212,10 +212,10 @@ class OpenAlexEnricher:
             )
         return paper
 
-    async def _enrich_reference(
+    async def enrich_reference(
         self,
         reference: Reference,
-        semaphore: asyncio.Semaphore,
+        semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         doi, arxiv, title, year, author = reference_lookup_fields(reference)
         if not doi and not arxiv and not title:
@@ -223,7 +223,8 @@ class OpenAlexEnricher:
             reference.openalex_error = "No DOI, arXiv id, or title available to look up."
             return
 
-        async with semaphore:
+        limiter = semaphore or asyncio.Semaphore(1)
+        async with limiter:
             try:
                 work, method, confidence = await self._lookup(doi, arxiv, title, year, author)
             except OpenAlexError as exc:

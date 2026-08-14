@@ -5,23 +5,68 @@ from typing import Annotated
 
 import httpx
 from fastapi import Depends
+from bullmq import Queue
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cache.jsonl import JsonlCache
+from app.database.session import get_database_session, get_session_factory
+from app.repositories.citation_audits import CitationAuditRepository
+from app.repositories.artifacts import ExtractionArtifactStore
 from app.config import (
     GROBID_TIMEOUT_SECONDS,
     OPENALEX_TIMEOUT_SECONDS,
+    extraction_artifact_path,
+    grobid_fallback_flavor,
     grobid_url,
+    ocr_enabled,
     openalex_api_key,
-    openalex_cache_path,
     openalex_mailto,
     openalex_proxy,
     openalex_url,
+    bullmq_options,
+    CLAIM_AUDIT_QUEUE_NAME,
+    OPENALEX_QUEUE_NAME,
+    SOURCE_SEARCH_QUEUE_NAME,
+    PAPER_INDEX_QUEUE_NAME,
 )
 from app.repositories.grobid import GrobidRepository
 from app.repositories.openalex import OpenAlexRepository
+from app.repositories.papers import PaperDocumentRepository
+from app.repositories.scholarly_works import ScholarlyWorkRepository
 from app.services.missing_works import MissingWorkFinder
 from app.services.openalex import OpenAlexEnricher
 from app.services.papers import PaperService
+from app.services.pdf_preflight import PdfPreflightService
+
+
+def get_paper_document_repository(
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> PaperDocumentRepository:
+    return PaperDocumentRepository(session)
+
+
+def get_citation_audit_repository(
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> CitationAuditRepository:
+    return CitationAuditRepository(session)
+
+
+@lru_cache(maxsize=1)
+def get_openalex_queue() -> Queue:
+    return Queue(OPENALEX_QUEUE_NAME, bullmq_options())
+
+
+@lru_cache(maxsize=1)
+def get_citation_audit_queue() -> Queue:
+    return Queue(CLAIM_AUDIT_QUEUE_NAME, bullmq_options())
+
+
+@lru_cache(maxsize=1)
+def get_source_search_queue() -> Queue:
+    return Queue(SOURCE_SEARCH_QUEUE_NAME, bullmq_options())
+
+@lru_cache(maxsize=1)
+def get_paper_index_queue() -> Queue:
+    return Queue(PAPER_INDEX_QUEUE_NAME, bullmq_options())
 
 
 async def get_grobid_client() -> AsyncIterator[httpx.AsyncClient]:
@@ -39,15 +84,32 @@ def get_grobid_repository(
     return GrobidRepository(client)
 
 
-def get_paper_service(
-    grobid: Annotated[GrobidRepository, Depends(get_grobid_repository)],
-) -> PaperService:
-    return PaperService(grobid)
+def get_pdf_preflight_service() -> PdfPreflightService:
+    return PdfPreflightService()
 
 
 @lru_cache(maxsize=1)
-def get_openalex_cache() -> JsonlCache:
-    return JsonlCache(Path(openalex_cache_path()))
+def get_extraction_artifact_store() -> ExtractionArtifactStore:
+    return ExtractionArtifactStore(Path(extraction_artifact_path()))
+
+
+def get_paper_service(
+    grobid: Annotated[GrobidRepository, Depends(get_grobid_repository)],
+    preflight: Annotated[PdfPreflightService, Depends(get_pdf_preflight_service)],
+    artifacts: Annotated[ExtractionArtifactStore, Depends(get_extraction_artifact_store)],
+) -> PaperService:
+    return PaperService(
+        grobid,
+        preflight,
+        artifacts,
+        ocr_enabled=ocr_enabled(),
+        fallback_flavor=grobid_fallback_flavor(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_scholarly_work_repository() -> ScholarlyWorkRepository:
+    return ScholarlyWorkRepository(get_session_factory())
 
 
 async def get_openalex_client() -> AsyncIterator[httpx.AsyncClient]:
@@ -70,7 +132,7 @@ async def get_openalex_client() -> AsyncIterator[httpx.AsyncClient]:
 
 def get_openalex_repository(
     client: Annotated[httpx.AsyncClient, Depends(get_openalex_client)],
-    cache: Annotated[JsonlCache, Depends(get_openalex_cache)],
+    cache: Annotated[ScholarlyWorkRepository, Depends(get_scholarly_work_repository)],
 ) -> OpenAlexRepository:
     return OpenAlexRepository(
         client,

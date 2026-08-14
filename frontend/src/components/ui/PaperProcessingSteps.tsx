@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Braces, Check, LoaderCircle, UploadCloud } from 'lucide-react'
+import {
+  ArrowPathIcon as LoaderCircle,
+  CheckIcon as Check,
+  CloudArrowUpIcon as UploadCloud,
+  CodeBracketIcon as Braces,
+} from '@heroicons/react/24/solid'
 
 interface PaperProcessingStepsProps {
   uploadProgress: number
@@ -54,9 +59,9 @@ export function PaperProcessingSteps({
               }`}
             >
               {uploadComplete ? (
-                <Check aria-hidden="true" size={15} strokeWidth={2.6} />
+                <Check aria-hidden="true" className="size-4" />
               ) : (
-                <UploadCloud aria-hidden="true" size={15} />
+                <UploadCloud aria-hidden="true" className="size-4" />
               )}
             </span>
             <span className="my-1 h-8 w-px bg-ink/10" aria-hidden="true" />
@@ -70,7 +75,7 @@ export function PaperProcessingSteps({
               </span>
             </div>
             <p className="mt-1 text-xs text-ink/45">
-              Sending the document to the parser
+              Preparing the document for analysis
             </p>
             <div className="mt-2 h-1 overflow-hidden rounded-full bg-ink/8">
               <span
@@ -91,11 +96,10 @@ export function PaperProcessingSteps({
               {uploadComplete ? (
                 <LoaderCircle
                   aria-hidden="true"
-                  className="animate-spin"
-                  size={15}
+                  className="size-4 animate-spin"
                 />
               ) : (
-                <Braces aria-hidden="true" size={15} />
+                <Braces aria-hidden="true" className="size-4" />
               )}
             </span>
           </div>
@@ -114,7 +118,7 @@ export function PaperProcessingSteps({
               </span>
             </div>
             <p className="mt-1 text-xs leading-5 text-ink/45">
-              GROBID reads the paper, then citations are normalized into Paper JSON
+              Extracting the paper structure and normalizing its citations
             </p>
           </div>
         </div>

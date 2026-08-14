@@ -47,7 +47,7 @@ def flatten_citations(paper: Paper) -> list[CitationNode]:
 def report(name: str, paper: Paper) -> dict:
     citations = flatten_citations(paper)
     status_counts = Counter(reference.status for reference in paper.references)
-    cited_ids = {ref_id for node in citations for ref_id in node.reference_ids}
+    cited_ids = {source_id for node in citations for source_id in node.source_ids}
     known_ids = {reference.id for reference in paper.references}
     empty_citation_text = sum(1 for node in citations if not node.raw_text.strip())
     unresolved_fragments = [
@@ -81,9 +81,21 @@ def report(name: str, paper: Paper) -> dict:
         "bibl_never_cited": sorted(known_ids - cited_ids),
         "sample_citations": [
             {
+                "id": node.id,
                 "rawText": node.raw_text,
-                "referenceIds": node.reference_ids,
+                "items": [
+                    item.model_dump(by_alias=True, exclude_none=True)
+                    for item in node.items
+                ],
+                "anchor": (
+                    node.anchor.model_dump(by_alias=True)
+                    if node.anchor
+                    else None
+                ),
+                "form": node.form,
+                "resolution": node.resolution.model_dump(by_alias=True),
                 "unresolvedFragments": node.unresolved_fragments,
+                "warnings": node.warnings,
             }
             for node in citations[:12]
         ],

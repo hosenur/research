@@ -8,17 +8,17 @@ import {
   useState,
 } from "react";
 import {
-  ArrowUp,
-  ChatBubbleQuestion,
-  Check,
-  EmojiSatisfied,
-  NavArrowRight,
-  Refresh,
-  Scissor,
-  Spark,
-  TextBox,
-  Xmark,
-} from "iconoir-react";
+  ArrowPathIcon as Refresh,
+  ArrowUpIcon as ArrowUp,
+  ChatBubbleBottomCenterTextIcon as TextBox,
+  ChatBubbleLeftRightIcon as ChatBubbleQuestion,
+  CheckIcon as Check,
+  ChevronRightIcon as NavArrowRight,
+  FaceSmileIcon as EmojiSatisfied,
+  ScissorsIcon as Scissor,
+  SparklesIcon as Spark,
+  XMarkIcon as Xmark,
+} from "@heroicons/react/24/solid";
 import { Shimmer } from "./internal/Shimmer";
 import { StreamText } from "./internal/StreamText";
 
@@ -41,7 +41,6 @@ type Mode = "idle" | "thinking" | "streaming" | "result";
 const iconProps = {
   width: 14,
   height: 14,
-  strokeWidth: 1.8,
   "aria-hidden": true,
 } as const;
 
@@ -55,7 +54,6 @@ const icons = {
     <ArrowUp
       width="16"
       height="16"
-      strokeWidth="2.4"
       aria-hidden="true"
     />
   ),

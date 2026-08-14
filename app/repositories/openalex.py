@@ -16,10 +16,22 @@ from app.config import (
 )
 
 
-class Cache(Protocol):
-    def get(self, key: str) -> Any | None: ...
+class CacheLookup(Protocol):
+    found: bool
+    value: Any | None
 
-    def set(self, key: str, value: Any) -> None: ...
+
+class Cache(Protocol):
+    async def get_cached(self, provider: str, cache_key: str) -> CacheLookup: ...
+
+    async def store_response(
+        self,
+        provider: str,
+        cache_key: str,
+        response: Any | None,
+        *,
+        request: dict[str, Any] | None = None,
+    ) -> int: ...
 
 
 class OpenAlexError(Exception):
@@ -77,9 +89,9 @@ class OpenAlexRepository:
     async def _get(self, path: str, params: dict[str, str] | None = None) -> Any | None:
         cache_key = self._cache_key(path, params)
         if self._cache is not None:
-            cached = self._cache.get(cache_key)
-            if cached is not None:
-                return cached
+            cached = await self._cache.get_cached("openalex", cache_key)
+            if cached.found:
+                return cached.value
 
         last_error: OpenAlexError | None = None
         for attempt in range(OPENALEX_RETRY_ATTEMPTS):
@@ -91,7 +103,12 @@ class OpenAlexRepository:
 
             if response.status_code == 404:
                 if self._cache is not None:
-                    self._cache.set(cache_key, None)
+                    await self._cache.store_response(
+                        "openalex",
+                        cache_key,
+                        None,
+                        request=self._cache_request(path, params),
+                    )
                 return None
             if response.status_code == 429:
                 last_error = OpenAlexError("OpenAlex rate-limited the request.")
@@ -111,10 +128,27 @@ class OpenAlexRepository:
             except ValueError as exc:
                 raise OpenAlexError("OpenAlex returned a non-JSON body.") from exc
             if self._cache is not None:
-                self._cache.set(cache_key, payload)
+                await self._cache.store_response(
+                    "openalex",
+                    cache_key,
+                    payload,
+                    request=self._cache_request(path, params),
+                )
             return payload
 
         raise last_error or OpenAlexError("OpenAlex rate-limited the request.")
+
+    def _cache_request(
+        self,
+        path: str,
+        params: dict[str, str] | None,
+    ) -> dict[str, Any]:
+        safe_params = {
+            key: value
+            for key, value in self._params(params).items()
+            if key not in {"api_key", "mailto"}
+        }
+        return {"path": path, "params": safe_params}
 
     async def _first_work(self, payload: Any | None) -> dict[str, Any] | None:
         if not payload:
