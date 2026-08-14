@@ -267,10 +267,16 @@ class CitationSourceCandidateRecord(Base):
 
 class CitationClaimSearchRecord(Base):
     __tablename__ = "citation_claim_searches"
-    __table_args__ = (UniqueConstraint("claim_hash", name="uq_citation_claim_search_hash"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "claim_hash",
+            "search_version",
+            name="uq_citation_claim_search_identity",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    claim_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    claim_hash: Mapped[str] = mapped_column(String(64))
     claim_text: Mapped[str] = mapped_column(Text)
     query_text: Mapped[str] = mapped_column(Text)
     search_version: Mapped[int] = mapped_column(Integer)

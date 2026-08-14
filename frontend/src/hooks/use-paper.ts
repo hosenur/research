@@ -51,13 +51,23 @@ async function parsePaperMutation(
     request.upload.addEventListener('load', () => arg.onProgress(100))
     request.addEventListener('load', () => {
       arg.requestRef.current = null
+      const contentType =
+        request.getResponseHeader('content-type') || 'an unknown format'
       let payload: unknown
       try {
         payload = JSON.parse(request.responseText)
       } catch {
+        if (request.status < 200 || request.status >= 300) {
+          reject(
+            new Error(
+              `Parsing failed with HTTP ${request.status} (${contentType}).`,
+            ),
+          )
+          return
+        }
         reject(
           new Error(
-            `The API returned ${request.getResponseHeader('content-type') || 'an unknown format'} instead of Paper JSON.`,
+            `The API returned ${contentType} instead of Paper JSON.`,
           ),
         )
         return

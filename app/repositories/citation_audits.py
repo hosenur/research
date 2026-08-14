@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Protocol
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -29,6 +30,13 @@ from app.services.citation_audit import (
     exact_claim_span,
     normalized_claim_hash,
 )
+
+
+class _CandidateSupportDecision(Protocol):
+    supports_claim: bool
+    confidence: float
+    explanation: str
+    evidence: str
 
 
 class CitationAuditRepository:
@@ -362,15 +370,31 @@ class CitationAuditRepository:
         await self._session.commit()
         return finding
 
-    async def update_candidate_support(self, candidate_id: str, decision) -> None:
-        record = await self._session.get(CitationSourceCandidateRecord, candidate_id)
-        if record is None:
+    async def update_candidate_supports(
+        self,
+        decisions: list[tuple[str, _CandidateSupportDecision]],
+    ) -> None:
+        if not decisions:
             return
-        record.support_status = "verified" if decision.supports_claim else "rejected"
-        record.supports_claim = decision.supports_claim
-        record.support_confidence = decision.confidence
-        record.support_explanation = decision.explanation[:500]
-        record.support_evidence = decision.evidence[:300]
+        records = list(
+            await self._session.scalars(
+                select(CitationSourceCandidateRecord).where(
+                    CitationSourceCandidateRecord.id.in_(
+                        [candidate_id for candidate_id, _decision in decisions]
+                    )
+                )
+            )
+        )
+        records_by_id = {record.id: record for record in records}
+        for candidate_id, decision in decisions:
+            record = records_by_id.get(candidate_id)
+            if record is None:
+                continue
+            record.support_status = "verified" if decision.supports_claim else "rejected"
+            record.supports_claim = decision.supports_claim
+            record.support_confidence = decision.confidence
+            record.support_explanation = decision.explanation[:500]
+            record.support_evidence = decision.evidence[:300]
         await self._session.commit()
 
     async def decide_candidate(self, paper_id: str, finding_id: str, candidate_id: str, decision: str) -> CitationSourceCandidateRecord:
@@ -468,12 +492,10 @@ class CitationAuditRepository:
         )
         return summary, rate, {str(rank): int(count) for rank, count in rank_result.tuples()}
 
-    async def save_source_candidates(
+    async def replace_source_candidates(
         self,
         finding_id: str,
         candidates: list[tuple[str, float, str]],
-        *,
-        source_search_version: int,
     ) -> CitationAuditFindingRecord:
         finding = await self._session.scalar(
             select(CitationAuditFindingRecord)
@@ -482,7 +504,6 @@ class CitationAuditRepository:
         )
         if finding is None:
             raise RuntimeError("The citation finding was not found.")
-        audit = await self._locked(finding.audit_id)
         await self._session.execute(
             delete(CitationSourceCandidateRecord).where(
                 CitationSourceCandidateRecord.finding_id == finding_id
@@ -499,6 +520,23 @@ class CitationAuditRepository:
                     reason=reason,
                 )
             )
+        await self._session.commit()
+        return finding
+
+    async def complete_source_search(
+        self,
+        finding_id: str,
+        *,
+        source_search_version: int,
+    ) -> CitationAuditFindingRecord:
+        finding = await self._session.scalar(
+            select(CitationAuditFindingRecord)
+            .where(CitationAuditFindingRecord.id == finding_id)
+            .with_for_update()
+        )
+        if finding is None:
+            raise RuntimeError("The citation finding was not found.")
+        audit = await self._locked(finding.audit_id)
         audit.revision += 1
         finding.revision = audit.revision
         finding.source_search_status = "completed"
