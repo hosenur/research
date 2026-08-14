@@ -17,6 +17,11 @@
 - Do not add or run tests unless the user explicitly asks for tests.
 - Production builds and static type checks are allowed for validating implementation work.
 
+## Deployment policy
+
+- Deploy application code to Railway through the connected Git repository. Commit and push code changes so Railway's Git integration performs the deployment; do not upload code directly with `railway up` or `railway deployment up`.
+- The Railway CLI may still be used for infrastructure configuration, variables, status, logs, metrics, and deployment diagnostics.
+
 ## Frontend data policy
 
 - Put component state and side-effect lifecycles behind React hooks.

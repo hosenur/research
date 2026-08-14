@@ -140,6 +140,9 @@ async def index_existing_paper(
     await documents.get(paper_id)
     job_id = f"paper-index-{paper_id}"
     job = await Job.fromId(index_queue, job_id)
+    if job is not None and await job.getState() == "failed":
+        await job.remove()
+        job = None
     if job is None:
         await index_queue.add("index-paper", {"paperId": paper_id}, {"jobId": job_id, "attempts": 3, "removeOnComplete": False, "removeOnFail": False})
     return {"paperId": paper_id, "status": "queued"}
