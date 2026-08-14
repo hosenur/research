@@ -1,4 +1,6 @@
+import asyncio
 from typing import Annotated
+from urllib.parse import quote
 
 from bullmq import Job, Queue
 from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status, HTTPException
@@ -11,12 +13,14 @@ from app.dependencies import (
     get_missing_work_finder,
     get_openalex_enricher,
     get_openalex_queue,
-    get_paper_index_queue,
     get_paper_document_repository,
+    get_paper_index_queue,
+    get_paper_ingestion_service,
+    get_paper_parse_queue,
     get_paper_service,
     get_source_search_queue,
 )
-from app.repositories.artifacts import ExtractionArtifactStore
+from app.repositories.artifacts import PaperArtifactStore
 from app.repositories.citation_audits import CitationAuditRepository
 from app.repositories.papers import PaperDocumentRepository
 from app.schemas.documents import (
@@ -28,6 +32,7 @@ from app.schemas.documents import (
     OpenAlexEnrichmentJob,
     OpenAlexEnrichmentStatus,
     PaperDocument,
+    PaperLifecycle,
     PaperJobStatus,
     PaperJobsStatus,
     CitationSourceDecisionRequest,
@@ -35,9 +40,14 @@ from app.schemas.documents import (
 from app.schemas.paper import MissingWorkReport, Paper
 from app.services.missing_works import MissingWorkFinder
 from app.services.openalex import OpenAlexEnricher
+from app.services.paper_ingestion import PaperIngestionService, parse_job_id
+from app.services.paper_pipeline import (
+    citation_audit_job_id,
+    openalex_job_id,
+    paper_index_job_id,
+)
 from app.services.papers import PaperService, normalize_tei
 from app.workers.source_search import enqueue_pending_source_searches
-from app.config import PAPER_INDEX_QUEUE_NAME, bullmq_options
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -46,12 +56,20 @@ TeiUpload = Annotated[UploadFile, File(description="GROBID TEI XML document")]
 PaperParser = Annotated[PaperService, Depends(get_paper_service)]
 ReferenceEnricher = Annotated[OpenAlexEnricher, Depends(get_openalex_enricher)]
 MissingWorks = Annotated[MissingWorkFinder, Depends(get_missing_work_finder)]
-ArtifactStore = Annotated[ExtractionArtifactStore, Depends(get_extraction_artifact_store)]
+ArtifactStore = Annotated[PaperArtifactStore, Depends(get_extraction_artifact_store)]
 PaperDocuments = Annotated[PaperDocumentRepository, Depends(get_paper_document_repository)]
+PaperIngestion = Annotated[PaperIngestionService, Depends(get_paper_ingestion_service)]
 OpenAlexQueue = Annotated[Queue, Depends(get_openalex_queue)]
 CitationAudits = Annotated[CitationAuditRepository, Depends(get_citation_audit_repository)]
 CitationAuditQueue = Annotated[Queue, Depends(get_citation_audit_queue)]
 SourceSearchQueue = Annotated[Queue, Depends(get_source_search_queue)]
+
+
+@router.post("", response_model=PaperLifecycle, status_code=status.HTTP_202_ACCEPTED)
+async def ingest_paper(file: PdfUpload, ingestion: PaperIngestion) -> PaperLifecycle:
+    """Persist an uploaded PDF and return before authoritative parsing begins."""
+    content = await file.read(MAX_PDF_SIZE + 1)
+    return await ingestion.ingest(file.filename or "paper.pdf", content)
 
 
 @router.post("/{paper_id}/citation-audit/findings/{finding_id}/candidates/{candidate_id}/decision")
@@ -127,7 +145,16 @@ async def parse_paper(
     filename = file.filename or "paper.pdf"
     paper = await service.parse_pdf(content, filename)
     document = await documents.create(filename, paper)
-    await index_queue.add("index-paper", {"paperId": document.id}, {"jobId": f"paper-index-{document.id}", "attempts": 3, "removeOnComplete": False, "removeOnFail": False})
+    await index_queue.add(
+        "index-paper",
+        {"paperId": document.id},
+        {
+            "jobId": paper_index_job_id(document.id),
+            "attempts": 3,
+            "removeOnComplete": False,
+            "removeOnFail": False,
+        },
+    )
     return document
 
 
@@ -138,20 +165,48 @@ async def index_existing_paper(
     index_queue: Annotated[Queue, Depends(get_paper_index_queue)],
 ) -> dict[str, str]:
     await documents.get(paper_id)
-    job_id = f"paper-index-{paper_id}"
+    job_id = paper_index_job_id(paper_id)
     job = await Job.fromId(index_queue, job_id)
     if job is not None and await job.getState() == "failed":
         await job.remove()
         job = None
     if job is None:
-        await index_queue.add("index-paper", {"paperId": paper_id}, {"jobId": job_id, "attempts": 3, "removeOnComplete": False, "removeOnFail": False})
+        await index_queue.add(
+            "index-paper",
+            {"paperId": paper_id},
+            {
+                "jobId": job_id,
+                "attempts": 3,
+                "removeOnComplete": False,
+                "removeOnFail": False,
+            },
+        )
     return {"paperId": paper_id, "status": "queued"}
 
 
-@router.get("/{paper_id}", response_model=PaperDocument)
-async def get_paper(paper_id: str, documents: PaperDocuments) -> PaperDocument:
-    """Return the latest paper projection with persisted provider enrichments."""
-    return await documents.get(paper_id)
+@router.get("/{paper_id}", response_model=PaperLifecycle)
+async def get_paper(paper_id: str, documents: PaperDocuments) -> PaperLifecycle:
+    """Return durable parse state and the paper projection when it is ready."""
+    return await documents.get_lifecycle(paper_id)
+
+
+@router.get("/{paper_id}/source")
+async def get_paper_source(
+    paper_id: str,
+    documents: PaperDocuments,
+    artifacts: ArtifactStore,
+) -> Response:
+    """Proxy the private source PDF for inline viewing without exposing MinIO."""
+    filename, object_key = await documents.source(paper_id)
+    content = await asyncio.to_thread(artifacts.read_source, object_key)
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
 
 
 @router.get("/{paper_id}/jobs", response_model=PaperJobsStatus)
@@ -161,11 +216,13 @@ async def get_paper_jobs(
     openalex_queue: OpenAlexQueue,
     audit_queue: CitationAuditQueue,
     index_queue: Annotated[Queue, Depends(get_paper_index_queue)],
+    parse_queue: Annotated[Queue, Depends(get_paper_parse_queue)],
 ) -> PaperJobsStatus:
     """Expose a single operational view of the long-running paper pipeline."""
-    await documents.get(paper_id)
+    await documents.get_lifecycle(paper_id)
     jobs = [
-        ("index", f"paper-index-{paper_id}", index_queue),
+        ("parse", parse_job_id(paper_id), parse_queue),
+        ("index", paper_index_job_id(paper_id), index_queue),
         ("openalex", openalex_job_id(paper_id), openalex_queue),
         ("citation-audit", citation_audit_job_id(paper_id), audit_queue),
     ]
@@ -196,10 +253,10 @@ async def normalize_paper(file: TeiUpload) -> Paper:
 
 
 @router.get("/artifacts/{artifact_id}/tei")
-def get_tei_artifact(artifact_id: str, artifacts: ArtifactStore) -> Response:
+async def get_tei_artifact(artifact_id: str, artifacts: ArtifactStore) -> Response:
     """Download the immutable raw TEI used to create a Paper response."""
     return Response(
-        content=artifacts.read_tei(artifact_id),
+        content=await asyncio.to_thread(artifacts.read_tei, artifact_id),
         media_type="application/tei+xml",
         headers={
             "Content-Disposition": f'attachment; filename="{artifact_id}.tei.xml"'
@@ -293,10 +350,6 @@ async def get_openalex_enrichment(
         progress=progress,
         error=job.failedReason,
     )
-
-
-def openalex_job_id(paper_id: str) -> str:
-    return f"openalex-{paper_id}"
 
 
 def map_job_status(value: str) -> str:
@@ -399,7 +452,3 @@ async def get_citation_audit(
         source_search_pending=await audits.source_search_pending_count(audit.id),
         error=(job.failedReason if job else audit.error) if job_status == "failed" else None,
     )
-
-
-def citation_audit_job_id(paper_id: str) -> str:
-    return f"citation-audit-{paper_id}"

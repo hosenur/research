@@ -38,3 +38,13 @@ export interface PaperDocumentJson {
   revision: number
   paper: PaperJson
 }
+
+export interface PaperLifecycleJson {
+  id: string
+  filename: string
+  status: 'uploaded' | 'parsing' | 'ready' | 'failed'
+  revision: number
+  paper?: PaperJson | null
+  error?: string | null
+  sourceUrl: string
+}

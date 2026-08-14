@@ -1,0 +1,26 @@
+# Product assumptions
+
+- This is an assessment demo for researchers arriving specifically to peer-review a paper. No authentication, accounts, or multi-tenant access control are required; papers and revisions may be persisted behind unguessable UUID routes.
+- Upload is durable and asynchronous. Persist the original PDF, return a paper ID quickly, open `/papers/:paperId` immediately, and make the workflow recoverable after refresh or reconnect.
+- Store original PDFs, extraction artifacts, and generated exports in the private MinIO S3 service backed by its `/data` Railway volume. A single MinIO replica is sufficient for this assessment; high availability is out of scope.
+- Optimize for time to first useful interaction rather than time to total completion. Show the local PDF and honest processing stages immediately, then reveal results progressively without blocking the workspace.
+- Provide a clearly labelled **Quick read** while GROBID is running: fast text extraction, rough chunks, embeddings, cosine retrieval, and provisional AI answers. Do not allow citation-sensitive review or editing from provisional context.
+- Promote the agent automatically to the authoritative GROBID parse and persistent semantic index when ready. The authoritative path uses stable structural chunks, embeddings stored in pgvector, and traceable section, paragraph, citation, and reference IDs.
+- Unlock authoritative chat and ordinary editing after GROBID succeeds while review continues in the background. Unlock new-citation edits only after their sources are verified.
+- Assume GROBID is normally available, not infallible. If authoritative parsing fails, retain Quick read, explain the document-level failure, offer retry, and keep citation-sensitive review, editing, and export disabled until a valid parse succeeds.
+- Assume peer review is the user's intent, so the automatic path starts parsing, indexing, reference resolution, missing-work discovery, and claim/citation-support review. Independent stages run concurrently where their dependencies allow, and findings appear as soon as they are verified.
+- Automatically review papers up to 80 pages. Longer papers still parse, index, and support chat, but use section-scoped review to bound latency and cost.
+- Verify every resolvable claim/citation pair: embeddings prioritize work, compact model batches make the support judgment, and results are `supported`, `weak`, `contradicted`, or `unverifiable`.
+- OpenAlex and Semantic Scholar are the only sources for suggested academic work. Surface links, evidence, confidence, unmatched references, empty searches, and failures; never invent or silently discard citations.
+- A source without usable provider evidence is `unverifiable`: show it honestly, but do not offer automatic insertion based on its title or model memory.
+- CSL-JSON is the canonical citation model. Detect style without interrupting review, then require confirmation before the first citation-changing edit or export and render through a real CSL processor.
+- **Use source** proposes both the in-text citation and CSL bibliography entry; it never changes the manuscript immediately.
+- Translate natural-language edits into constrained AST operations rather than accepting free-form rewritten documents. Show one command-level diff with optional sentence-level approval and apply nothing without approval.
+- Every approved command creates an immutable, comparable revision with selective revert and restore. A hard validation gate rejects silent citation loss, unsupported new claims, broken anchors, and structural damage before approval.
+- Export prioritizes semantic fidelity over visual fidelity. Produce both an editable LaTeX project and compiled PDF; preserve recoverable structure and explicitly warn about figures, equations, or formatting that cannot be reconstructed safely.
+- Keep pipeline stages independent and durable after the browser disconnects. Preserve successful results, retry failed stages with backoff, expose manual retry, and restore the complete workspace from `/papers/:paperId`.
+- Make the structured manuscript/editor primary. Use a contextual panel for Review, Agent, References, and Processing, with the immutable original PDF available as an optional split view.
+- Anchor findings to exact manuscript nodes and provide a review inbox grouped by missing citation, weak support, contradiction, and uncertainty. Summarize extraction quality and keep partial or unresolved citations inspectable inline.
+- Target a sub-second initial workspace, a durable ID when upload finishes, Quick read within 5 seconds, authoritative parsing within 30 seconds, and the first verified finding within 45 seconds for a typical 20-page born-digital paper.
+- Definition of done is one recorded vertical workflow: upload, Quick read, authoritative parse, structured manuscript, both review lanes, verified source, proposed edit, approval, revision history, and LaTeX/PDF export, backed by system-design documentation.
+- The demo should warn users not to upload confidential manuscripts even though authentication is intentionally out of scope.

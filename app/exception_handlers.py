@@ -13,6 +13,7 @@ from app.exceptions import (
     InvalidDocumentError,
     OcrFailedError,
     PaperDocumentNotFoundError,
+    PaperDocumentNotReadyError,
     UnsupportedMediaTypeError,
 )
 
@@ -28,6 +29,7 @@ _STATUS_CODES: dict[type[AppError], int] = {
     GrobidEmptyResultError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     ExtractionArtifactNotFoundError: status.HTTP_404_NOT_FOUND,
     PaperDocumentNotFoundError: status.HTTP_404_NOT_FOUND,
+    PaperDocumentNotReadyError: status.HTTP_409_CONFLICT,
 }
 
 

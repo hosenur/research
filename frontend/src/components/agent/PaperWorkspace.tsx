@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import type { CSSProperties } from 'react'
 import {
   ArrowPathIcon as RotateCcw,
   ArrowTopRightOnSquareIcon as ExternalLink,
@@ -19,33 +19,28 @@ import { useCitationAudit } from '@/hooks/use-citation-audit'
 import type { PaperJson } from '@/lib/paper'
 
 interface PaperWorkspaceProps {
-  file: File
+  filename: string
   onReset: () => void
   paper: PaperJson
   paperId: string
   paperRevision: number
+  pdfUrl: string
 }
 
 export function PaperWorkspace({
-  file,
+  filename,
   onReset,
   paper,
   paperId,
   paperRevision,
+  pdfUrl,
 }: PaperWorkspaceProps) {
-  const [pdfUrl, setPdfUrl] = useState('')
   const { enrichment, paper: currentPaper } = useOpenAlexEnrichment({
     initialRevision: paperRevision,
     paper,
     paperId,
   })
   const citationAudit = useCitationAudit(paperId)
-
-  useEffect(() => {
-    const nextUrl = URL.createObjectURL(file)
-    setPdfUrl(nextUrl)
-    return () => URL.revokeObjectURL(nextUrl)
-  }, [file])
 
   return (
     <section
@@ -81,7 +76,7 @@ export function PaperWorkspace({
                   </Button>
                 </div>
                 <object
-                  aria-label={`Preview of ${file.name}`}
+                  aria-label={`Preview of ${filename}`}
                   className="size-full min-h-0"
                   data={pdfUrl}
                   type="application/pdf"

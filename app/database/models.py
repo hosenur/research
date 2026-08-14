@@ -17,7 +17,18 @@ class PaperRecord(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     filename: Mapped[str] = mapped_column(String(512))
     content_sha256: Mapped[str] = mapped_column(String(64), index=True)
-    paper_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    paper_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), default="uploaded", server_default="uploaded"
+    )
+    source_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parse_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parse_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    parse_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

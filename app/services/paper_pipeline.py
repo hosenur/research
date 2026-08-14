@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+from bullmq import Job, Queue
+
+from app.config import claim_audit_model
+from app.repositories.citation_audits import CitationAuditRepository
+
+
+async def enqueue_parsed_paper_pipeline(
+    paper_id: str,
+    *,
+    audits: CitationAuditRepository,
+    index_queue: Queue,
+    openalex_queue: Queue,
+    citation_audit_queue: Queue,
+) -> None:
+    """Idempotently fan a parsed paper out to every currently implemented stage."""
+    audit = await audits.create_or_get(paper_id, claim_audit_model())
+    await _add_once(
+        index_queue,
+        "index-paper",
+        {"paperId": paper_id},
+        paper_index_job_id(paper_id),
+        attempts=3,
+    )
+    await _add_once(
+        openalex_queue,
+        "enrich-openalex",
+        {"paperId": paper_id},
+        openalex_job_id(paper_id),
+        attempts=4,
+    )
+    await _add_once(
+        citation_audit_queue,
+        "audit-missing-citations",
+        {"paperId": paper_id, "auditId": audit.id},
+        citation_audit_job_id(paper_id),
+        attempts=4,
+    )
+
+
+async def _add_once(
+    queue: Queue,
+    name: str,
+    data: dict[str, str],
+    job_id: str,
+    *,
+    attempts: int,
+) -> None:
+    if await Job.fromId(queue, job_id) is not None:
+        return
+    await queue.add(
+        name,
+        data,
+        {
+            "jobId": job_id,
+            "attempts": attempts,
+            "backoff": {"type": "exponential", "delay": 2_000},
+            "removeOnComplete": False,
+            "removeOnFail": False,
+        },
+    )
+
+
+def paper_index_job_id(paper_id: str) -> str:
+    return f"paper-index-{paper_id}"
+
+
+def openalex_job_id(paper_id: str) -> str:
+    return f"openalex-{paper_id}"
+
+
+def citation_audit_job_id(paper_id: str) -> str:
+    return f"citation-audit-{paper_id}"

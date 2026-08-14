@@ -15,7 +15,7 @@ from app.exceptions import (
     InvalidDocumentError,
     UnsupportedMediaTypeError,
 )
-from app.repositories.artifacts import ExtractionArtifactStore
+from app.repositories.artifacts import PaperArtifactStore
 from app.repositories.grobid import GrobidRepository, GrobidResult
 from app.schemas.paper import (
     CitationNode,
@@ -36,7 +36,7 @@ class PaperService:
         self,
         grobid: GrobidRepository,
         preflight: PdfPreflightService,
-        artifacts: ExtractionArtifactStore,
+        artifacts: PaperArtifactStore,
         *,
         ocr_enabled: bool,
         fallback_flavor: str | None,
@@ -124,7 +124,11 @@ class PaperService:
             warning for warning in quality.warnings if warning not in paper.warnings
         )
         tei_sha256 = hashlib.sha256(result.xml).hexdigest()
-        artifact_id = self._artifacts.save_tei(pdf_sha256, result.xml)
+        artifact_id = await asyncio.to_thread(
+            self._artifacts.save_tei,
+            pdf_sha256,
+            result.xml,
+        )
         paper.extraction = ExtractionMetadata(
             grobid_version=grobid_version,
             processed_at=datetime.now(UTC).isoformat(),

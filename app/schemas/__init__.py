@@ -11,6 +11,7 @@ from app.schemas.documents import (
     OpenAlexEnrichmentJob,
     OpenAlexEnrichmentStatus,
     PaperDocument,
+    PaperLifecycle,
     ReferenceEnrichmentUpdate,
 )
 
@@ -83,6 +84,7 @@ __all__ = [
     "OpenAlexEnrichmentStatus",
     "Paper",
     "PaperDocument",
+    "PaperLifecycle",
     "Paragraph",
     "ParagraphNode",
     "PdfPreflightReport",

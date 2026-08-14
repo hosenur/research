@@ -11,6 +11,16 @@ class PaperDocument(ApiModel):
     paper: Paper
 
 
+class PaperLifecycle(ApiModel):
+    id: str
+    filename: str
+    status: Literal["uploaded", "parsing", "ready", "failed"]
+    revision: int = Field(ge=1)
+    paper: Paper | None = None
+    error: str | None = None
+    source_url: str
+
+
 class ReferenceEnrichmentUpdate(ApiModel):
     reference_id: str
     provider: Literal["openalex"] = "openalex"

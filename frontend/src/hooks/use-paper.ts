@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import useSWR from 'swr'
 import useSWRMutation from 'swr/mutation'
-import type { OpenAlexWorkJson, PaperDocumentJson, PaperJson } from '@/lib/paper'
+import type { OpenAlexWorkJson, PaperJson, PaperLifecycleJson } from '@/lib/paper'
 
 interface EnrichmentResponse {
   status: 'not_started' | 'queued' | 'running' | 'completed' | 'failed'
@@ -32,10 +32,17 @@ interface ParsePaperArgument {
   requestRef: React.MutableRefObject<XMLHttpRequest | null>
 }
 
-async function parsePaperMutation(
+export type PaperUploadState =
+  | { kind: 'upload' }
+  | { kind: 'uploading'; file: File; uploadProgress: number }
+  | { kind: 'error'; message: string }
+
+const MAX_PDF_BYTES = 50 * 1024 * 1024
+
+async function ingestPaperMutation(
   url: string,
   { arg }: { arg: ParsePaperArgument },
-): Promise<PaperDocumentJson> {
+): Promise<PaperLifecycleJson> {
   return new Promise((resolve, reject) => {
     const body = new FormData()
     body.append('file', arg.file)
@@ -60,14 +67,14 @@ async function parsePaperMutation(
         if (request.status < 200 || request.status >= 300) {
           reject(
             new Error(
-              `Parsing failed with HTTP ${request.status} (${contentType}).`,
+              `Upload failed with HTTP ${request.status} (${contentType}).`,
             ),
           )
           return
         }
         reject(
           new Error(
-            `The API returned ${contentType} instead of Paper JSON.`,
+            `The API returned ${contentType} instead of a paper lifecycle.`,
           ),
         )
         return
@@ -76,20 +83,20 @@ async function parsePaperMutation(
         const detail =
           typeof payload === 'object' && payload !== null && 'detail' in payload
             ? String(payload.detail)
-            : `Parsing failed with HTTP ${request.status}.`
+            : `Upload failed with HTTP ${request.status}.`
         reject(new Error(detail))
         return
       }
-      const document = payload as PaperDocumentJson
-      if (!document.id || !document.paper) {
-        reject(new Error('The API returned an invalid paper document.'))
+      const lifecycle = payload as PaperLifecycleJson
+      if (!lifecycle.id || !lifecycle.filename || !lifecycle.status) {
+        reject(new Error('The API returned an invalid paper lifecycle.'))
         return
       }
-      resolve(document)
+      resolve(lifecycle)
     })
     request.addEventListener('error', () => {
       arg.requestRef.current = null
-      reject(new Error('Could not process this paper.'))
+      reject(new Error('Could not upload this paper.'))
     })
     request.addEventListener('abort', () => {
       arg.requestRef.current = null
@@ -101,7 +108,7 @@ async function parsePaperMutation(
 
 export function useParsePaper() {
   const requestRef = useRef<XMLHttpRequest | null>(null)
-  const mutation = useSWRMutation('/api/papers/parse', parsePaperMutation)
+  const mutation = useSWRMutation('/api/papers', ingestPaperMutation)
   const abort = useCallback(() => {
     requestRef.current?.abort()
     requestRef.current = null
@@ -116,10 +123,81 @@ export function useParsePaper() {
   return { abort, error: mutation.error, isMutating: mutation.isMutating, parse }
 }
 
+export function usePaperUploadFlow(
+  onUploaded: (lifecycle: PaperLifecycleJson) => void,
+) {
+  const [state, setState] = useState<PaperUploadState>({ kind: 'upload' })
+  const mutation = useParsePaper()
+
+  const reset = useCallback(() => {
+    mutation.abort()
+    setState({ kind: 'upload' })
+  }, [mutation])
+
+  const selectFile = useCallback(
+    (file?: File | null) => {
+      if (!file) return
+      if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+        setState({ kind: 'error', message: 'Choose a PDF research paper.' })
+        return
+      }
+      if (file.size > MAX_PDF_BYTES) {
+        setState({ kind: 'error', message: 'PDF files must be 50 MB or smaller.' })
+        return
+      }
+
+      setState({ kind: 'uploading', file, uploadProgress: 0 })
+      void mutation
+        .parse(file, (uploadProgress) =>
+          setState({ kind: 'uploading', file, uploadProgress }),
+        )
+        .then(onUploaded)
+        .catch((error: unknown) => {
+          if (error instanceof DOMException && error.name === 'AbortError') return
+          setState({
+            kind: 'error',
+            message: error instanceof Error ? error.message : 'Could not upload this paper.',
+          })
+        })
+    },
+    [mutation, onUploaded],
+  )
+
+  return { reset, selectFile, state }
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url)
-  if (!response.ok) throw new Error(`The API returned HTTP ${response.status}.`)
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null
+    throw new Error(payload?.detail ?? `The API returned HTTP ${response.status}.`)
+  }
   return response.json() as Promise<T>
+}
+
+export function usePaperLifecycle(paperId: string) {
+  return useSWR<PaperLifecycleJson>(`/api/papers/${paperId}`, fetchJson, {
+    keepPreviousData: true,
+    refreshInterval: (latest) =>
+      latest?.status === 'ready' ? 0 : latest?.status === 'failed' ? 5_000 : 1_200,
+    revalidateOnFocus: true,
+  })
+}
+
+export function useObjectUrl(file: File | null) {
+  const [url, setUrl] = useState('')
+
+  useEffect(() => {
+    if (!file) {
+      setUrl('')
+      return
+    }
+    const nextUrl = URL.createObjectURL(file)
+    setUrl(nextUrl)
+    return () => URL.revokeObjectURL(nextUrl)
+  }, [file])
+
+  return url
 }
 
 async function postJson<T>(url: string): Promise<T> {

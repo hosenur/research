@@ -12,6 +12,7 @@ interface PaperPipelineStatusProps {
 }
 
 const labels: Record<string, string> = {
+  parse: 'Paper structure',
   index: 'Paper index',
   openalex: 'Reference enrichment',
   'citation-audit': 'Citation audit',

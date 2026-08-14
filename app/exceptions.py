@@ -53,3 +53,8 @@ class ExtractionArtifactNotFoundError(AppError):
 
 class PaperDocumentNotFoundError(AppError):
     code = "paper_document_not_found"
+
+
+class PaperDocumentNotReadyError(AppError):
+    code = "paper_document_not_ready"
+    retryable = True

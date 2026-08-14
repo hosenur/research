@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as IllustrationsRouteImport } from './routes/illustrations'
+import { Route as PapersPaperIdRouteImport } from './routes/papers/$paperId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,31 +23,40 @@ const IllustrationsRoute = IllustrationsRouteImport.update({
   path: '/illustrations',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PapersPaperIdRoute = PapersPaperIdRouteImport.update({
+  id: '/papers/$paperId',
+  path: '/papers/$paperId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/illustrations': typeof IllustrationsRoute
+  '/papers/$paperId': typeof PapersPaperIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/illustrations': typeof IllustrationsRoute
+  '/papers/$paperId': typeof PapersPaperIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/illustrations': typeof IllustrationsRoute
+  '/papers/$paperId': typeof PapersPaperIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/illustrations'
+  fullPaths: '/' | '/illustrations' | '/papers/$paperId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/illustrations'
-  id: '__root__' | '/' | '/illustrations'
+  to: '/' | '/illustrations' | '/papers/$paperId'
+  id: '__root__' | '/' | '/illustrations' | '/papers/$paperId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   IllustrationsRoute: typeof IllustrationsRoute
+  PapersPaperIdRoute: typeof PapersPaperIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +75,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IllustrationsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/papers/$paperId': {
+      id: '/papers/$paperId'
+      path: '/papers/$paperId'
+      fullPath: '/papers/$paperId'
+      preLoaderRoute: typeof PapersPaperIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   IllustrationsRoute: IllustrationsRoute,
+  PapersPaperIdRoute: PapersPaperIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

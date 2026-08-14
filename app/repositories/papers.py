@@ -3,13 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import PaperRecord, ReferenceEnrichmentRecord
-from app.exceptions import PaperDocumentNotFoundError
-from app.schemas.documents import PaperDocument, ReferenceEnrichmentUpdate
+from app.exceptions import PaperDocumentNotFoundError, PaperDocumentNotReadyError
+from app.schemas.documents import PaperDocument, PaperLifecycle, ReferenceEnrichmentUpdate
 from app.schemas.paper import OpenAlexWork, Paper, Reference
 
 
@@ -30,14 +31,80 @@ class PaperDocumentRepository:
             filename=filename,
             content_sha256=content_hash,
             paper_json=payload,
+            status="ready",
+            parse_completed_at=datetime.now(UTC),
             revision=1,
         )
         self._session.add(record)
         await self._session.commit()
         return PaperDocument(id=record.id, revision=record.revision, paper=paper)
 
+    async def create_pending(
+        self,
+        *,
+        paper_id: str,
+        filename: str,
+        content_sha256: str,
+        source_object_key: str,
+    ) -> PaperLifecycle:
+        record = PaperRecord(
+            id=paper_id,
+            filename=filename,
+            content_sha256=content_sha256,
+            paper_json=None,
+            status="uploaded",
+            source_object_key=source_object_key,
+            revision=1,
+        )
+        self._session.add(record)
+        await self._session.commit()
+        return self._lifecycle(record)
+
+    async def get_lifecycle(self, paper_id: str) -> PaperLifecycle:
+        record = await self._get_record(paper_id)
+        paper: Paper | None = None
+        if record.paper_json is not None:
+            enrichments = await self.list_enrichments(paper_id)
+            paper = self._merge(Paper.model_validate(record.paper_json), enrichments)
+        return self._lifecycle(record, paper=paper)
+
+    async def begin_parse(self, paper_id: str) -> PaperLifecycle:
+        record = await self._get_record_for_update(paper_id)
+        if record.status != "ready":
+            record.status = "parsing"
+            record.parse_error = None
+            record.parse_started_at = datetime.now(UTC)
+            await self._session.commit()
+        return self._lifecycle(record)
+
+    async def complete_parse(self, paper_id: str, paper: Paper) -> PaperDocument:
+        record = await self._get_record_for_update(paper_id)
+        record.paper_json = paper.model_dump(mode="json", by_alias=True)
+        record.status = "ready"
+        record.parse_error = None
+        record.parse_completed_at = datetime.now(UTC)
+        await self._session.commit()
+        return PaperDocument(id=record.id, revision=record.revision, paper=paper)
+
+    async def fail_parse(self, paper_id: str, error: str) -> None:
+        record = await self._get_record_for_update(paper_id)
+        if record.status != "ready":
+            record.status = "failed"
+            record.parse_error = error[:4_000]
+            await self._session.commit()
+
+    async def source(self, paper_id: str) -> tuple[str, str]:
+        record = await self._get_record(paper_id)
+        if not record.source_object_key:
+            raise PaperDocumentNotFoundError("The source PDF was not persisted.")
+        return record.filename, record.source_object_key
+
     async def get(self, paper_id: str) -> PaperDocument:
         record = await self._get_record(paper_id)
+        if record.paper_json is None or record.status != "ready":
+            raise PaperDocumentNotReadyError(
+                "The paper is still being parsed. Retry when its lifecycle is ready."
+            )
         enrichments = await self.list_enrichments(paper_id)
         paper = self._merge(Paper.model_validate(record.paper_json), enrichments)
         return PaperDocument(id=record.id, revision=record.revision, paper=paper)
@@ -111,6 +178,26 @@ class PaperDocumentRepository:
         if record is None:
             raise PaperDocumentNotFoundError("The parsed paper was not found.")
         return record
+
+    async def _get_record_for_update(self, paper_id: str) -> PaperRecord:
+        record = await self._session.scalar(
+            select(PaperRecord).where(PaperRecord.id == paper_id).with_for_update()
+        )
+        if record is None:
+            raise PaperDocumentNotFoundError("The parsed paper was not found.")
+        return record
+
+    @staticmethod
+    def _lifecycle(record: PaperRecord, *, paper: Paper | None = None) -> PaperLifecycle:
+        return PaperLifecycle(
+            id=record.id,
+            filename=record.filename,
+            status=record.status,  # type: ignore[arg-type]
+            revision=record.revision,
+            paper=paper,
+            error=record.parse_error,
+            source_url=f"/papers/{record.id}/source",
+        )
 
     @staticmethod
     def _merge(

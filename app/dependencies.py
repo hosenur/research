@@ -1,6 +1,5 @@
 from collections.abc import AsyncIterator
 from functools import lru_cache
-from pathlib import Path
 from typing import Annotated
 
 import httpx
@@ -10,11 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_database_session, get_session_factory
 from app.repositories.citation_audits import CitationAuditRepository
-from app.repositories.artifacts import ExtractionArtifactStore
+from app.repositories.artifacts import PaperArtifactStore, create_paper_artifact_store
 from app.config import (
     GROBID_TIMEOUT_SECONDS,
     OPENALEX_TIMEOUT_SECONDS,
-    extraction_artifact_path,
     grobid_fallback_flavor,
     grobid_url,
     ocr_enabled,
@@ -27,6 +25,7 @@ from app.config import (
     OPENALEX_QUEUE_NAME,
     SOURCE_SEARCH_QUEUE_NAME,
     PAPER_INDEX_QUEUE_NAME,
+    PAPER_PARSE_QUEUE_NAME,
 )
 from app.repositories.grobid import GrobidRepository
 from app.repositories.openalex import OpenAlexRepository
@@ -34,6 +33,7 @@ from app.repositories.papers import PaperDocumentRepository
 from app.repositories.scholarly_works import ScholarlyWorkRepository
 from app.services.missing_works import MissingWorkFinder
 from app.services.openalex import OpenAlexEnricher
+from app.services.paper_ingestion import PaperIngestionService
 from app.services.papers import PaperService
 from app.services.pdf_preflight import PdfPreflightService
 
@@ -69,6 +69,11 @@ def get_paper_index_queue() -> Queue:
     return Queue(PAPER_INDEX_QUEUE_NAME, bullmq_options())
 
 
+@lru_cache(maxsize=1)
+def get_paper_parse_queue() -> Queue:
+    return Queue(PAPER_PARSE_QUEUE_NAME, bullmq_options())
+
+
 async def get_grobid_client() -> AsyncIterator[httpx.AsyncClient]:
     """Create a client pointed at the configured GROBID service."""
     async with httpx.AsyncClient(
@@ -89,14 +94,14 @@ def get_pdf_preflight_service() -> PdfPreflightService:
 
 
 @lru_cache(maxsize=1)
-def get_extraction_artifact_store() -> ExtractionArtifactStore:
-    return ExtractionArtifactStore(Path(extraction_artifact_path()))
+def get_extraction_artifact_store() -> PaperArtifactStore:
+    return create_paper_artifact_store()
 
 
 def get_paper_service(
     grobid: Annotated[GrobidRepository, Depends(get_grobid_repository)],
     preflight: Annotated[PdfPreflightService, Depends(get_pdf_preflight_service)],
-    artifacts: Annotated[ExtractionArtifactStore, Depends(get_extraction_artifact_store)],
+    artifacts: Annotated[PaperArtifactStore, Depends(get_extraction_artifact_store)],
 ) -> PaperService:
     return PaperService(
         grobid,
@@ -105,6 +110,14 @@ def get_paper_service(
         ocr_enabled=ocr_enabled(),
         fallback_flavor=grobid_fallback_flavor(),
     )
+
+
+def get_paper_ingestion_service(
+    documents: Annotated[PaperDocumentRepository, Depends(get_paper_document_repository)],
+    artifacts: Annotated[PaperArtifactStore, Depends(get_extraction_artifact_store)],
+    parse_queue: Annotated[Queue, Depends(get_paper_parse_queue)],
+) -> PaperIngestionService:
+    return PaperIngestionService(documents, artifacts, parse_queue)
 
 
 @lru_cache(maxsize=1)

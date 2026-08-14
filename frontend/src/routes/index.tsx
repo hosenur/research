@@ -1,81 +1,87 @@
-import { useState } from 'react'
+import { useCallback } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import {
+  ArrowTopRightOnSquareIcon as ExternalLink,
   CloudArrowUpIcon as UploadCloud,
   DocumentTextIcon as FileText,
   XMarkIcon as X,
 } from '@heroicons/react/24/solid'
-import { PaperWorkspace } from '@/components/agent/PaperWorkspace'
 import { Button } from '@/components/ui/button'
 import { DropZone } from '@/components/ui/drop-zone'
 import { FileTrigger } from '@/components/ui/file-trigger'
-import LoadingState from '@/components/ui/LoadingState'
-import { UiProvider } from '@/components/ui/UiProvider'
-import { useParsePaper } from '@/hooks/use-paper'
-import type { PaperDocumentJson } from '@/lib/paper'
-
-const MAX_PDF_BYTES = 50 * 1024 * 1024
-
-type PageState =
-  | { kind: 'upload' }
-  | { kind: 'parsing'; file: File; uploadProgress: number }
-  | { kind: 'workspace'; file: File; document: PaperDocumentJson }
-  | { kind: 'error'; message: string }
-
-function fileError(file: File) {
-  if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-    return 'Choose a PDF research paper.'
-  }
-  if (file.size > MAX_PDF_BYTES) return 'PDF files must be 50 MB or smaller.'
-  return null
-}
+import { PaperProcessingSteps } from '@/components/ui/PaperProcessingSteps'
+import { useObjectUrl, usePaperUploadFlow } from '@/hooks/use-paper'
+import type { PaperLifecycleJson } from '@/lib/paper'
 
 function PaperPage() {
-  const [state, setState] = useState<PageState>({ kind: 'upload' })
-  const paperMutation = useParsePaper()
-
-  function reset() {
-    paperMutation.abort()
-    setState({ kind: 'upload' })
-  }
-
-  function selectFile(file?: File | null) {
-    if (!file) return
-    const validationError = fileError(file)
-    if (validationError) {
-      setState({ kind: 'error', message: validationError })
-      return
-    }
-    parsePaper(file)
-  }
-
-  function parsePaper(file: File) {
-    setState({ kind: 'parsing', file, uploadProgress: 0 })
-    void paperMutation
-      .parse(file, (uploadProgress) => setState({ kind: 'parsing', file, uploadProgress }))
-      .then((document) => setState({ kind: 'workspace', file, document }))
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === 'AbortError') return
-        setState({
-          kind: 'error',
-          message: error instanceof Error ? error.message : 'Could not process this paper.',
-        })
+  const navigate = Route.useNavigate()
+  const onUploaded = useCallback(
+    (lifecycle: PaperLifecycleJson) => {
+      void navigate({
+        to: '/papers/$paperId',
+        params: { paperId: lifecycle.id },
       })
-  }
+    },
+    [navigate],
+  )
+  const upload = usePaperUploadFlow(onUploaded)
+  const previewUrl = useObjectUrl(
+    upload.state.kind === 'uploading' ? upload.state.file : null,
+  )
 
-  if (state.kind === 'workspace') {
+  if (upload.state.kind === 'uploading') {
     return (
-      <PaperWorkspace
-        file={state.file}
-        onReset={reset}
-        paper={state.document.paper}
-        paperId={state.document.id}
-        paperRevision={state.document.revision}
-      />
+      <section
+        aria-label="Uploading research paper"
+        className="grid min-h-dvh gap-4 bg-bg p-3 lg:grid-cols-[minmax(0,1fr)_24rem] lg:p-4"
+      >
+        <div className="relative min-h-[60dvh] overflow-hidden rounded-xl border border-border bg-muted shadow-overlay lg:min-h-0">
+          <div className="absolute right-2 top-2 z-10 flex gap-1.5 rounded-lg border border-border bg-overlay/95 p-1 shadow-sm backdrop-blur-sm">
+            <Button
+              aria-label="Open PDF in a new tab"
+              intent="plain"
+              isDisabled={!previewUrl}
+              onPress={() => window.open(previewUrl, '_blank', 'noopener,noreferrer')}
+              size="sq-xs"
+            >
+              <ExternalLink />
+            </Button>
+            <Button intent="outline" onPress={upload.reset} size="xs">
+              <X />
+              Cancel
+            </Button>
+          </div>
+          {previewUrl ? (
+            <object
+              aria-label={`Preview of ${upload.state.file.name}`}
+              className="size-full"
+              data={previewUrl}
+              type="application/pdf"
+            >
+              <div className="grid size-full place-items-center p-8 text-center text-sm text-muted-fg">
+                <Button onPress={() => window.open(previewUrl, '_blank')} size="sm">
+                  <ExternalLink />
+                  Open PDF
+                </Button>
+              </div>
+            </object>
+          ) : null}
+        </div>
+        <aside className="self-center rounded-xl border border-border bg-overlay p-5 shadow-overlay lg:self-stretch">
+          <span className="grid size-11 place-items-center rounded-xl bg-primary-subtle text-primary-subtle-fg">
+            <FileText aria-hidden="true" className="size-5" />
+          </span>
+          <h1 className="mt-4 truncate font-display text-xl font-semibold text-fg">
+            {upload.state.file.name}
+          </h1>
+          <p className="mt-2 text-sm/6 text-muted-fg">
+            You can read the PDF now. We will open a permanent workspace as soon as the upload finishes.
+          </p>
+          <PaperProcessingSteps uploadProgress={upload.state.uploadProgress} />
+        </aside>
+      </section>
     )
   }
-
-  const isParsing = state.kind === 'parsing'
 
   return (
     <div className="grid min-h-dvh place-items-center p-4 sm:p-8">
@@ -85,66 +91,37 @@ function PaperPage() {
         getDropOperation={(types) =>
           types.has('application/pdf') || types.has('Files') ? 'copy' : 'cancel'
         }
-        isDisabled={isParsing}
         onDrop={(event) => {
           const droppedFile = event.items.find((item) => item.kind === 'file')
           if (droppedFile?.kind === 'file') {
-            void droppedFile.getFile().then(selectFile)
+            void droppedFile.getFile().then(upload.selectFile)
           }
         }}
       >
-        {state.kind === 'parsing' ? (
-          <div className="flex max-w-md flex-col items-center text-center">
-            <span className="grid size-14 place-items-center rounded-xl bg-primary-subtle text-primary-subtle-fg">
-              <FileText aria-hidden="true" className="size-6" />
-            </span>
-            <p className="mt-5 max-w-full truncate font-display text-xl font-semibold text-fg">
-              {state.file.name}
+        <div className="flex max-w-lg flex-col items-center text-center">
+          <span className="grid size-16 place-items-center rounded-2xl bg-primary-subtle text-primary-subtle-fg transition-transform duration-150 group-data-[drop-target]/drop-zone:scale-[0.97]">
+            <UploadCloud aria-hidden="true" className="size-7" />
+          </span>
+          <h1 className="mt-6 font-display text-3xl font-semibold tracking-[-0.035em] text-fg sm:text-4xl">
+            Drop your research paper here
+          </h1>
+          <p className="mt-3 text-sm/6 text-muted-fg">
+            Upload one PDF up to 50 MB. Parsing starts automatically.
+          </p>
+          <FileTrigger
+            acceptedFileTypes={['application/pdf', '.pdf']}
+            className="mt-7"
+            onSelect={(files) => upload.selectFile(files?.item(0))}
+            size="lg"
+          >
+            Choose PDF
+          </FileTrigger>
+          {upload.state.kind === 'error' ? (
+            <p className="mt-5 text-sm font-medium text-danger-subtle-fg" role="alert">
+              {upload.state.message}
             </p>
-            <p className="mt-2 text-sm text-muted-fg">
-              {state.uploadProgress < 100
-                ? `Uploading ${state.uploadProgress}%`
-                : 'Extracting the paper and citations'}
-            </p>
-            <div className="mt-6">
-              <UiProvider>
-                <LoadingState
-                  label={state.uploadProgress < 100 ? 'Uploading paper' : 'Structuring paper'}
-                  variant="Drive"
-                />
-              </UiProvider>
-            </div>
-            <Button className="mt-8" intent="plain" onPress={reset} size="sm">
-              <X />
-              Cancel
-            </Button>
-          </div>
-        ) : (
-          <div className="flex max-w-lg flex-col items-center text-center">
-            <span className="grid size-16 place-items-center rounded-2xl bg-primary-subtle text-primary-subtle-fg transition-transform duration-150 group-data-[drop-target]/drop-zone:scale-[0.97]">
-              <UploadCloud aria-hidden="true" className="size-7" />
-            </span>
-            <h1 className="mt-6 font-display text-3xl font-semibold tracking-[-0.035em] text-fg sm:text-4xl">
-              Drop your research paper here
-            </h1>
-            <p className="mt-3 text-sm/6 text-muted-fg">
-              Upload one PDF up to 50 MB. Parsing starts automatically.
-            </p>
-            <FileTrigger
-              acceptedFileTypes={['application/pdf', '.pdf']}
-              className="mt-7"
-              onSelect={(files) => selectFile(files?.item(0))}
-              size="lg"
-            >
-              Choose PDF
-            </FileTrigger>
-            {state.kind === 'error' ? (
-              <p className="mt-5 text-sm font-medium text-danger-subtle-fg" role="alert">
-                {state.message}
-              </p>
-            ) : null}
-          </div>
-        )}
+          ) : null}
+        </div>
       </DropZone>
     </div>
   )

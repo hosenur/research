@@ -36,6 +36,7 @@ OPENALEX_QUEUE_NAME = "paper-enrichment"
 CLAIM_AUDIT_QUEUE_NAME = "citation-audit"
 SOURCE_SEARCH_QUEUE_NAME = "citation-source-search"
 PAPER_INDEX_QUEUE_NAME = "paper-index"
+PAPER_PARSE_QUEUE_NAME = "paper-parse"
 BULLMQ_SCHEMA = "bullmq"
 
 
@@ -54,6 +55,34 @@ def ocr_enabled() -> bool:
 
 def extraction_artifact_path() -> str:
     return os.getenv("EXTRACTION_ARTIFACT_PATH", "/data/extractions")
+
+
+def object_store_endpoint() -> str | None:
+    value = os.getenv("S3_ENDPOINT", "").strip()
+    return value or None
+
+
+def object_store_access_key() -> str | None:
+    value = os.getenv("S3_ACCESS_KEY", "").strip()
+    return value or None
+
+
+def object_store_secret_key() -> str | None:
+    value = os.getenv("S3_SECRET_KEY", "").strip()
+    return value or None
+
+
+def object_store_bucket() -> str:
+    return os.getenv("S3_BUCKET", "research-papers").strip() or "research-papers"
+
+
+def object_store_region() -> str:
+    return os.getenv("S3_REGION", "us-east-1").strip() or "us-east-1"
+
+
+def object_store_secure() -> bool:
+    value = os.getenv("S3_SECURE", "0").strip().lower()
+    return value in {"1", "true", "yes"}
 
 
 def database_url() -> str:
