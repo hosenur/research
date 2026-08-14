@@ -1,0 +1,53 @@
+services:
+  api:
+    build:
+      context: .
+    ports:
+      # Bind only to this machine's Tailscale address, not LAN/public interfaces.
+      - "${TAILSCALE_IP:?Set TAILSCALE_IP in .env}:${API_PORT:-3333}:8000"
+    environment:
+      # Internal URL that the API can use when PDF parsing is added.
+      GROBID_URL: http://grobid:8070
+      OPENALEX_MAILTO: ${OPENALEX_MAILTO:-}
+      OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
+      OPENALEX_CACHE_PATH: /data/openalex-cache.jsonl
+      OPENALEX_PROXY: ${OPENALEX_PROXY:-}
+    volumes:
+      - openalex-cache:/data
+    depends_on:
+      - grobid
+    networks:
+      - edge
+      - backend
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/hello')"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  grobid:
+    image: grobid/grobid:0.9.0-crf
+    init: true
+    expose:
+      - "8070"
+    networks:
+      - backend
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
+    restart: unless-stopped
+
+volumes:
+  openalex-cache:
+
+networks:
+  edge:
+  backend:
+    internal: true
