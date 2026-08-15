@@ -17,6 +17,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { UiProvider } from '@/components/ui/UiProvider'
 import { useManuscriptEdits, type ManuscriptEditFlow } from '@/hooks/use-manuscript-edits'
 import { usePaperChat } from '@/hooks/use-paper-chat'
+import type { PaperAgentSelectionContext } from '@/lib/manuscript-focus'
 import { twMerge } from 'tailwind-merge'
 import { ChatMarkdown } from './ChatMarkdown'
 import { EditProposalThread } from './EditCommandPanel'
@@ -43,14 +44,16 @@ export function AgentChat({
   paper,
   paperId,
   revision,
+  selectionContext,
 }: {
   className?: string
   edits?: ManuscriptEditFlow
   paper: unknown
   paperId?: string
   revision?: number
+  selectionContext?: PaperAgentSelectionContext | null
 }) {
-  const chat = usePaperChat(paper, paperId)
+  const chat = usePaperChat(paper, paperId, selectionContext)
   if (edits) {
     return <AgentConversation chat={chat} className={className} edits={edits} />
   }
@@ -93,9 +96,6 @@ function AgentConversation({
   const threadRef = useRef<HTMLDivElement>(null)
   const wasLoading = useRef(false)
   const refreshProposal = edits?.refreshProposal
-  const citationProposal =
-    edits?.proposal?.command.startsWith('Use verified source ') === true ||
-    edits?.proposal?.command.startsWith('Remove verified source ') === true
 
   useEffect(() => {
     if (wasLoading.current && !isLoading && refreshProposal) {
@@ -153,7 +153,7 @@ function AgentConversation({
               />
             ))}
 
-            {edits?.proposal && !citationProposal ? (
+            {edits?.proposal ? (
               <div className="min-w-0 max-w-full">
                 <EditProposalThread edits={edits} />
               </div>

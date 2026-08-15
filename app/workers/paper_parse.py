@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import httpx
 from bullmq import Job, Queue, Worker
@@ -28,6 +29,9 @@ from app.services.papers import PaperService
 from app.services.pdf_preflight import PdfPreflightService
 
 
+logger = logging.getLogger(__name__)
+
+
 async def run() -> None:
     artifacts = create_paper_artifact_store()
     index_queue = Queue(PAPER_INDEX_QUEUE_NAME, bullmq_options())
@@ -51,6 +55,7 @@ async def run() -> None:
             if not paper_id:
                 raise ValueError("The paper-parse job is missing paperId.")
             page_count: int | None = None
+            parse_complete = False
             try:
                 async with get_session_factory()() as session:
                     documents = PaperDocumentRepository(session)
@@ -83,6 +88,7 @@ async def run() -> None:
                         await PaperPipelineRepository(session).complete(
                             paper_id, "authoritative-parse"
                         )
+                parse_complete = True
 
                 await job.updateProgress({"stage": "starting-review"})
                 async with get_session_factory()() as session:
@@ -97,11 +103,51 @@ async def run() -> None:
                     )
                 return {"paperId": paper_id, "stage": "ready"}
             except Exception as exc:
-                async with get_session_factory()() as session:
-                    await PaperDocumentRepository(session).fail_parse(paper_id, str(exc))
-                    await PaperPipelineRepository(session).fail(
-                        paper_id, "authoritative-parse", str(exc)
+                if parse_complete:
+                    logger.warning(
+                        "Parsed paper %s but could not start its review pipeline: %s",
+                        paper_id,
+                        exc,
                     )
+                    raise
+
+                current_attempt = job.attemptsMade + 1
+                max_attempts = max(int(job.attempts), 1)
+                async with get_session_factory()() as session:
+                    pipeline = PaperPipelineRepository(session)
+                    if current_attempt < max_attempts:
+                        await pipeline.queued(
+                            paper_id,
+                            "authoritative-parse",
+                            progress={
+                                "retrying": True,
+                                "attempt": current_attempt,
+                                "attempts": max_attempts,
+                                "reason": (
+                                    "A temporary processing issue occurred. "
+                                    f"Retrying automatically ({current_attempt} of {max_attempts})."
+                                ),
+                            },
+                        )
+                        logger.warning(
+                            "Paper parse attempt %s/%s failed for %s; retrying: %s",
+                            current_attempt,
+                            max_attempts,
+                            paper_id,
+                            exc,
+                        )
+                    else:
+                        await PaperDocumentRepository(session).fail_parse(
+                            paper_id, str(exc)
+                        )
+                        await pipeline.fail(
+                            paper_id, "authoritative-parse", str(exc)
+                        )
+                        logger.exception(
+                            "Paper parse exhausted %s attempts for %s",
+                            max_attempts,
+                            paper_id,
+                        )
                 raise
 
         worker = Worker(

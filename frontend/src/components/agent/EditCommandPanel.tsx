@@ -98,7 +98,7 @@ export function EditProposalThread({
                     </p>
                   )}
                   <div className="mt-3 grid gap-2 text-xs/5">
-                    {operation.bibliographyChange ? (
+                    {operation.bibliographyChange || operation.bibliographyChanges?.length ? (
                       <p className="font-medium text-muted-fg">Manuscript</p>
                     ) : null}
                     <div className="rounded-md border border-danger/20 bg-danger-subtle p-2 text-danger-subtle-fg">
@@ -110,9 +110,17 @@ export function EditProposalThread({
                       {operation.afterText}
                     </div>
                   </div>
-                  {operation.bibliographyChange ? (
-                    <BibliographyPreview change={operation.bibliographyChange} />
-                  ) : null}
+                  {(operation.bibliographyChanges?.length
+                    ? operation.bibliographyChanges
+                    : operation.bibliographyChange
+                      ? [operation.bibliographyChange]
+                      : []
+                  ).map((change) => (
+                    <BibliographyPreview
+                      change={change}
+                      key={`${operation.id}:${change.action}:${change.referenceId}`}
+                    />
+                  ))}
                   {operation.validationError ? (
                     <p className="mt-2 text-xs text-danger-subtle-fg">
                       {operation.validationError}
@@ -202,6 +210,21 @@ function BibliographyPreview({
           <div className="mt-2 rounded-md border border-border bg-muted/40 p-2 text-xs/5 text-fg">
             <span className="mr-2 font-mono">=</span>
             {marker}{change.afterText}
+          </div>
+        </>
+      ) : null}
+      {change.action === 'update' ? (
+        <>
+          <p className="mt-1 text-xs/5 text-muted-fg">
+            The matched provider metadata will replace this bibliography entry.
+          </p>
+          <div className="mt-2 rounded-md border border-danger/20 bg-danger-subtle p-2 text-xs/5 text-danger-subtle-fg">
+            <span className="mr-2 font-mono">−</span>
+            {change.beforeText}
+          </div>
+          <div className="mt-2 rounded-md border border-success/20 bg-success-subtle p-2 text-xs/5 text-success-subtle-fg">
+            <span className="mr-2 font-mono">+</span>
+            {change.afterText}
           </div>
         </>
       ) : null}

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import (
     ClaimCitationReviewRecord,
+    PaperRecord,
     ReferenceEnrichmentRecord,
     ScholarlyWorkRecord,
 )
@@ -83,10 +84,17 @@ class ClaimCitationReviewRepository:
         await self._session.commit()
 
     async def list(self, paper_id: str) -> list[ClaimCitationFinding]:
+        paper = await self._session.get(PaperRecord, paper_id)
+        if paper is None:
+            return []
         rows = list(
             await self._session.scalars(
                 select(ClaimCitationReviewRecord)
-                .where(ClaimCitationReviewRecord.paper_id == paper_id)
+                .where(
+                    ClaimCitationReviewRecord.paper_id == paper_id,
+                    ClaimCitationReviewRecord.paper_revision
+                    == paper.manuscript_revision,
+                )
                 .order_by(
                     ClaimCitationReviewRecord.priority_score.desc().nullslast(),
                     ClaimCitationReviewRecord.section_id,

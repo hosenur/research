@@ -1,98 +1,145 @@
+import { useState } from 'react'
 import {
   CheckCircleIcon,
   DownloadSimpleIcon,
+  ExportIcon,
   FilePdfIcon,
   FileZipIcon,
   SpinnerGapIcon,
-  WarningIcon,
 } from '@phosphor-icons/react'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
-import { usePaperExport } from '@/hooks/use-paper-export'
+import { Dialog } from '@/components/ui/dialog'
+import { Description, Label } from '@/components/ui/field'
+import {
+  Popover,
+  PopoverBody,
+  PopoverContent,
+  PopoverFooter,
+  PopoverHeader,
+} from '@/components/ui/popover'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+} from '@/components/ui/select'
+import {
+  usePaperExport,
+  type PaperExportFormat,
+} from '@/hooks/use-paper-export'
 
-export function ExportPanel({ paperId, revision }: { paperId: string; revision: number }) {
+export function ExportControl({ paperId, revision }: { paperId: string; revision: number }) {
+  const [format, setFormat] = useState<PaperExportFormat>('pdf')
   const exportFlow = usePaperExport(paperId, revision)
   const current = exportFlow.export
-  return (
-    <div className="h-full min-h-0 overflow-y-auto p-1">
-      <Card className="bg-overlay shadow-overlay">
-        <CardHeader
-          title="Citation style"
-          description="Citations and bibliography are rendered from canonical CSL-JSON through citeproc."
-        >
-          {exportFlow.style?.confirmed ? (
-            <Badge intent="success"><CheckCircleIcon data-slot="icon" />Confirmed</Badge>
-          ) : (
-            <Badge intent="warning"><WarningIcon data-slot="icon" />Confirmation required</Badge>
-          )}
-        </CardHeader>
-        <CardContent className="border-t px-4 py-4">
-          <p className="mb-3 text-xs text-muted-fg">
-            Detected family: {exportFlow.style?.detectedFamily ?? 'unknown'}. Confirm before the first citation-changing export.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {(exportFlow.style?.candidates ?? []).map((candidate) => (
-              <Button
-                intent={exportFlow.style?.styleId === candidate.id ? 'primary' : 'outline'}
-                isDisabled={exportFlow.isSavingStyle}
-                key={candidate.id}
-                onPress={() => void exportFlow.confirmStyle(candidate.id)}
-                size="sm"
-              >
-                {candidate.label}
-              </Button>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
 
-      <Card className="mt-3 bg-overlay shadow-overlay">
-        <CardHeader
-          title={`Export revision ${revision}`}
-          description="Produces an editable LaTeX project and its compiled PDF."
-        />
-        <CardContent className="border-t px-4 py-4">
-          <Button
-            isDisabled={!exportFlow.style?.confirmed || exportFlow.isCreating || current?.status === 'queued' || current?.status === 'running'}
-            onPress={() => void exportFlow.createExport()}
-            size="sm"
-          >
-            {current?.status === 'queued' || current?.status === 'running' ? <SpinnerGapIcon className="animate-spin" /> : <FileZipIcon />}
-            {current?.status === 'queued' || current?.status === 'running' ? 'Building export…' : 'Build export'}
-          </Button>
-          {current?.status === 'failed' ? (
-            <p className="mt-3 text-sm text-danger-subtle-fg">{current.error ?? 'Export failed.'}</p>
-          ) : null}
-          {current?.status === 'completed' ? (
-            <div className="mt-4">
-              <Badge intent="success"><CheckCircleIcon data-slot="icon" />Export ready</Badge>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {current.latexUrl ? (
-                  <Button onPress={() => window.open(`/api${current.latexUrl}`, '_blank')} size="sm">
-                    <FileZipIcon />LaTeX project<DownloadSimpleIcon />
-                  </Button>
-                ) : null}
-                {current.pdfUrl ? (
-                  <Button intent="outline" onPress={() => window.open(`/api${current.pdfUrl}`, '_blank')} size="sm">
-                    <FilePdfIcon />Compiled PDF<DownloadSimpleIcon />
-                  </Button>
-                ) : null}
-              </div>
-              {current.warnings.length ? (
-                <ul className="mt-4 list-disc space-y-1 pl-4 text-xs/5 text-warning-subtle-fg">
-                  {current.warnings.map((warning) => <li key={warning}>{warning}</li>)}
-                </ul>
-              ) : null}
-            </div>
-          ) : null}
-          {exportFlow.error ? (
-            <p className="mt-3 text-sm text-danger-subtle-fg">
-              {exportFlow.error instanceof Error ? exportFlow.error.message : 'Export is unavailable.'}
-            </p>
-          ) : null}
-        </CardContent>
-      </Card>
-    </div>
+  return (
+    <Popover>
+      <Button intent="outline" size="sm">
+        <ExportIcon />
+        Export
+      </Button>
+      <PopoverContent className="w-80" placement="bottom end">
+        <Dialog>
+          <PopoverHeader
+            title="Export manuscript"
+            description={`Choose a format and download revision ${revision}.`}
+          />
+          <PopoverBody className="space-y-4">
+            <Select
+              isDisabled={exportFlow.isDownloading || exportFlow.isLoadingStyle}
+              onChange={(key) => {
+                if (key != null) void exportFlow.confirmStyle(String(key))
+              }}
+              placeholder="Choose a citation style"
+              value={exportFlow.style?.styleId ?? null}
+            >
+              <Label>Citation style</Label>
+              <SelectTrigger />
+              <SelectContent items={exportFlow.style?.candidates ?? []}>
+                {(candidate) => (
+                  <SelectItem id={candidate.id} textValue={candidate.label}>
+                    {candidate.label}
+                  </SelectItem>
+                )}
+              </SelectContent>
+              <Description>
+                Detected family: {exportFlow.style?.detectedFamily ?? 'unknown'}
+              </Description>
+            </Select>
+
+            <Select
+              isDisabled={exportFlow.isDownloading}
+              onChange={(key) => {
+                if (key === 'pdf' || key === 'latex') setFormat(key)
+              }}
+              value={format}
+            >
+              <Label>Format</Label>
+              <SelectTrigger />
+              <SelectContent>
+                <SelectItem id="pdf" textValue="PDF">
+                  <FilePdfIcon />
+                  <SelectLabel>PDF</SelectLabel>
+                </SelectItem>
+                <SelectItem id="latex" textValue="LaTeX project">
+                  <FileZipIcon />
+                  <SelectLabel>LaTeX project</SelectLabel>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+
+            {!exportFlow.style?.confirmed && !exportFlow.isLoadingStyle ? (
+              <p className="text-xs/5 text-warning-subtle-fg">
+                Choose a citation style before downloading.
+              </p>
+            ) : null}
+            {current?.status === 'failed' ? (
+              <p className="text-sm/6 text-danger-subtle-fg" role="alert">
+                {current.error ?? 'Export failed.'}
+              </p>
+            ) : null}
+            {exportFlow.error ? (
+              <p className="text-sm/6 text-danger-subtle-fg" role="alert">
+                {exportFlow.error instanceof Error
+                  ? exportFlow.error.message
+                  : 'Export is unavailable.'}
+              </p>
+            ) : null}
+            {exportFlow.downloadedAt ? (
+              <p className="flex items-center gap-2 text-xs/5 text-success-subtle-fg" role="status">
+                <CheckCircleIcon /> Download started.
+              </p>
+            ) : null}
+            {current?.status === 'completed' && current.warnings.length ? (
+              <ul className="list-disc space-y-1 pl-4 text-xs/5 text-warning-subtle-fg">
+                {current.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            ) : null}
+          </PopoverBody>
+          <PopoverFooter>
+            <Button
+              isDisabled={
+                !exportFlow.style?.confirmed ||
+                exportFlow.isDownloading ||
+                exportFlow.isSavingStyle
+              }
+              onPress={() => void exportFlow.downloadExport(format)}
+              size="sm"
+            >
+              {exportFlow.isDownloading ? (
+                <SpinnerGapIcon className="animate-spin" />
+              ) : (
+                <DownloadSimpleIcon />
+              )}
+              {exportFlow.isDownloading ? 'Preparing download…' : 'Download'}
+            </Button>
+          </PopoverFooter>
+        </Dialog>
+      </PopoverContent>
+    </Popover>
   )
 }

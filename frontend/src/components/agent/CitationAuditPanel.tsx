@@ -4,12 +4,13 @@ import {
   BookOpenIcon as Source,
   CheckIcon,
   CheckCircleIcon as Complete,
+  InfoIcon,
   SparkleIcon as Ai,
   SpinnerGapIcon as Processing,
+  TrashIcon,
   WarningIcon as Warning,
   XIcon as XMarkIcon,
 } from '@phosphor-icons/react'
-import { InformationCircleIcon, TrashIcon } from '@heroicons/react/24/solid'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardAction, CardContent, CardHeader } from '@/components/ui/card'
 import { Link } from '@/components/ui/link'
@@ -28,6 +29,11 @@ import {
   ModalTitle,
 } from '@/components/ui/modal'
 import { Tooltip, TooltipContent } from '@/components/ui/tooltip'
+import {
+  missingReferenceSource,
+  preferredMissingReferenceCandidate,
+  type ManuscriptSelection,
+} from '@/lib/manuscript-focus'
 
 interface ActiveSource {
   action: 'add' | 'remove'
@@ -58,12 +64,7 @@ interface CitationAuditPanelProps {
     findingId: string,
     feedback: 'false_positive' | 'needs_review',
   ) => unknown | Promise<unknown>
-  onFindingSelect?: (
-    paragraphId: string,
-    startOffset?: number,
-    endOffset?: number,
-    text?: string,
-  ) => void
+  onFindingSelect?: (selection: ManuscriptSelection) => void
   decisionPending?: boolean
 }
 
@@ -246,14 +247,26 @@ export function CitationAuditPanel({
                       <Button
                         size="sm"
                         intent="outline"
-                        onPress={() =>
-                          onFindingSelect(
-                            finding.paragraphId,
-                            finding.startOffset,
-                            finding.endOffset,
-                            finding.sourceText,
+                        onPress={() => {
+                          const candidate = preferredMissingReferenceCandidate(
+                            finding.sourceCandidates,
                           )
-                        }
+                          onFindingSelect({
+                            paragraphId: finding.paragraphId,
+                            startOffset: finding.startOffset,
+                            endOffset: finding.endOffset,
+                            text: finding.sourceText,
+                            source: missingReferenceSource(finding.sourceCandidates),
+                            context: {
+                              kind: 'missing',
+                              label: candidate?.work.title ?? finding.claimText,
+                              findingId: finding.id,
+                              candidateId: candidate?.id,
+                              paragraphId: finding.paragraphId,
+                              text: finding.sourceText,
+                            },
+                          })
+                        }}
                       >
                         View in manuscript
                       </Button>
@@ -336,7 +349,7 @@ export function CitationAuditPanel({
                             {candidate.supportExplanation ? (
                               <Tooltip delay={300}>
                                 <Button className="mt-2" intent="plain" size="xs">
-                                  <InformationCircleIcon data-slot="icon" />
+                                  <InfoIcon data-slot="icon" />
                                   Why this source?
                                 </Button>
                                 <TooltipContent className="max-w-sm" placement="top start">

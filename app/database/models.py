@@ -294,6 +294,50 @@ class ClaimCitationReviewRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class CitationImprovementCandidateRecord(Base):
+    __tablename__ = "citation_improvement_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "review_finding_id",
+            "work_id",
+            name="uq_citation_improvement_candidate_work",
+        ),
+        Index(
+            "ix_citation_improvement_candidates_finding_rank",
+            "review_finding_id",
+            "rank",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_finding_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("claim_citation_reviews.id", ondelete="CASCADE"),
+    )
+    work_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scholarly_works.id", ondelete="CASCADE")
+    )
+    rank: Mapped[int] = mapped_column(Integer)
+    score: Mapped[float] = mapped_column(Float)
+    reason: Mapped[str] = mapped_column(Text)
+    support_status: Mapped[str] = mapped_column(
+        String(32), default="not_started", server_default="not_started"
+    )
+    supports_claim: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    support_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    support_explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    support_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending"
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ManuscriptRevisionRecord(Base):
     __tablename__ = "manuscript_revisions"
     __table_args__ = (

@@ -43,9 +43,7 @@ class CSLPaperExporter:
             for reference in paper.references
             if reference.csl is not None
         ]
-        warnings = [
-            "The export reconstructs semantic structure from PDF extraction; original figures, equations, page layout, and typography may need manual restoration."
-        ]
+        warnings: list[str] = []
         missing_csl = [reference.id for reference in paper.references if reference.csl is None]
         if missing_csl:
             warnings.append(

@@ -16,6 +16,7 @@ import {
   SidebarInset,
   SidebarProvider,
 } from '@/components/ui/sidebar'
+import { usePaperJobs } from '@/hooks/use-paper-jobs'
 import type { PaperLifecycleJson } from '@/lib/paper'
 
 interface PaperPendingWorkspaceProps {
@@ -31,7 +32,15 @@ export function PaperPendingWorkspace({
   onReset,
   pdfUrl,
 }: PaperPendingWorkspaceProps) {
-  const failed = lifecycle.status === 'failed'
+  const { data: pipeline } = usePaperJobs(lifecycle.id)
+  const parseStatus = pipeline?.jobs.find(
+    (job) => job.name === 'authoritative-parse',
+  )?.status
+  const lifecycleFailed = lifecycle.status === 'failed'
+  const recovering =
+    lifecycleFailed &&
+    (!pipeline || ['queued', 'running', 'completed'].includes(parseStatus ?? ''))
+  const failed = lifecycleFailed && !recovering
   const quickReadReady = lifecycle.retrievalMode === 'provisional'
 
   return (
@@ -83,10 +92,18 @@ export function PaperPendingWorkspace({
           <div className="flex min-h-full flex-col gap-3 p-4 sm:p-6">
             <Card className="bg-overlay shadow-overlay">
               <CardHeader
-                title={failed ? 'Paper parsing needs attention' : 'Building your review workspace'}
+                title={
+                  failed
+                    ? 'Paper processing was interrupted'
+                    : recovering
+                      ? 'Confirming paper processing'
+                      : 'Building your review workspace'
+                }
                 description={
                   failed
-                    ? 'The original PDF is safe. Background retries may still recover this paper.'
+                    ? 'The original PDF is safe. Refresh once to confirm the latest state, then retry the failed stage below if needed.'
+                    : recovering
+                      ? 'A temporary interruption was reported. The latest background retry is being checked.'
                     : quickReadReady
                       ? 'Ask broad questions now while GROBID extracts citation-safe structure.'
                       : 'Keep reading the PDF while fast text extraction and GROBID run together.'
@@ -100,7 +117,11 @@ export function PaperPendingWorkspace({
                     ) : (
                       <Processing className="animate-spin" data-slot="icon" />
                     )}
-                    {failed ? 'Parse failed' : 'Authoritative parse running'}
+                    {failed
+                      ? 'Processing interrupted'
+                      : recovering
+                        ? 'Checking background retry'
+                        : 'Authoritative parse running'}
                   </Badge>
                   {quickReadReady ? (
                     <Badge intent="warning">Quick read · provisional</Badge>
@@ -108,17 +129,19 @@ export function PaperPendingWorkspace({
                   {failed ? (
                     <Button intent="outline" onPress={onRefresh} size="sm">
                       <Processing />
-                      Check again
+                      Refresh status
                     </Button>
                   ) : null}
                 </div>
-                {lifecycle.error ? (
+                {failed && lifecycle.error ? (
                   <p className="mt-3 text-sm/6 text-danger-subtle-fg" role="alert">
                     {lifecycle.error}
                   </p>
                 ) : (
                   <p className="mt-3 text-sm/6 text-muted-fg">
-                    {quickReadReady
+                    {recovering
+                      ? 'This status refreshes automatically; no upload action is needed.'
+                      : quickReadReady
                       ? 'Broad paper chat is ready. Citation review and editing remain locked until the authoritative parse arrives.'
                       : 'Quick read will unlock broad chat first; citation-sensitive actions unlock with the authoritative paper model.'}
                   </p>

@@ -49,10 +49,17 @@ class SourceFulfillmentResult:
 
 
 @dataclass(frozen=True)
-class _SourceSearchResult:
+class SourceSearchResult:
     work_id: str
     score: float
     reason: str
+
+
+@dataclass(frozen=True)
+class SourceClaim:
+    claim_text: str
+    section_title: str
+    paragraph_id: str
 
 
 @dataclass(frozen=True)
@@ -76,8 +83,8 @@ class CitationSourceFulfillment:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        searcher: _CitationSourceSearcher,
-        verifier: _SourceSupportVerifier,
+        searcher: CitationSourceSearcher,
+        verifier: SourceSupportVerifier,
         *,
         search_version: int,
     ) -> None:
@@ -95,7 +102,11 @@ class CitationSourceFulfillment:
             if candidates is None:
                 candidates = await self._searcher.search(
                     context.paper,
-                    context.finding,
+                    SourceClaim(
+                        claim_text=context.finding.claim_text,
+                        section_title=context.finding.section_title,
+                        paragraph_id=context.finding.paragraph_id,
+                    ),
                 )
                 await self._cache_candidates(claim_hash, context, candidates)
 
@@ -128,7 +139,7 @@ class CitationSourceFulfillment:
     async def _cached_candidates(
         self,
         claim_hash: str,
-    ) -> list[_SourceSearchResult] | None:
+    ) -> list[SourceSearchResult] | None:
         async with self._session_factory() as session:
             cached = await session.scalar(
                 select(CitationClaimSearchRecord).where(
@@ -144,7 +155,7 @@ class CitationSourceFulfillment:
                 .order_by(CitationClaimSearchResultRecord.rank)
             )
             return [
-                _SourceSearchResult(
+                SourceSearchResult(
                     work_id=row.work_id,
                     score=row.score,
                     reason=row.reason,
@@ -156,9 +167,16 @@ class CitationSourceFulfillment:
         self,
         claim_hash: str,
         context: _FindingContext,
-        candidates: list[_SourceSearchResult],
+        candidates: list[SourceSearchResult],
     ) -> None:
-        query = _source_query(context.paper, context.finding)
+        query = source_query(
+            context.paper,
+            SourceClaim(
+                claim_text=context.finding.claim_text,
+                section_title=context.finding.section_title,
+                paragraph_id=context.finding.paragraph_id,
+            ),
+        )
         async with self._session_factory() as session:
             statement = insert(CitationClaimSearchRecord).values(
                 id=str(uuid.uuid4()),
@@ -203,7 +221,7 @@ class CitationSourceFulfillment:
     async def _replace_candidates(
         self,
         finding_id: str,
-        candidates: list[_SourceSearchResult],
+        candidates: list[SourceSearchResult],
     ) -> None:
         async with self._session_factory() as session:
             await CitationAuditRepository(session).replace_source_candidates(
@@ -279,8 +297,8 @@ def build_citation_source_fulfillment(
 ) -> CitationSourceFulfillment:
     return CitationSourceFulfillment(
         session_factory,
-        _CitationSourceSearcher(works, openalex, semantic_scholar),
-        _SourceSupportVerifier(
+        CitationSourceSearcher(works, openalex, semantic_scholar),
+        SourceSupportVerifier(
             openai_client,
             api_key=api_key,
             model=model,
@@ -289,7 +307,7 @@ def build_citation_source_fulfillment(
     )
 
 
-class _CitationSourceSearcher:
+class CitationSourceSearcher:
     """Search locally first, then consult both provider adapters for coverage."""
 
     def __init__(
@@ -305,14 +323,14 @@ class _CitationSourceSearcher:
     async def search(
         self,
         paper: Paper,
-        finding: CitationAuditFindingRecord,
-    ) -> list[_SourceSearchResult]:
-        query = _source_query(paper, finding)
+        claim: SourceClaim,
+    ) -> list[SourceSearchResult]:
+        query = source_query(paper, claim)
         stored = await self._works.search(
             query,
             limit=SOURCE_SEARCH_MAX_CANDIDATES,
         )
-        excluded = _nearby_cited_references(paper, finding)
+        excluded = nearby_cited_references(paper, claim.paragraph_id)
         stored_candidates = self._rank_uncited(
             paper,
             query,
@@ -320,7 +338,7 @@ class _CitationSourceSearcher:
             excluded,
             minimum_score=0.25,
         )
-        bibliography_candidates: list[_SourceSearchResult] = []
+        bibliography_candidates: list[SourceSearchResult] = []
         excluded_ids = {reference.id for reference in excluded}
         for reference in paper.references:
             if reference.id in excluded_ids or reference.openalex is None:
@@ -331,7 +349,7 @@ class _CitationSourceSearcher:
             )
             if work_id:
                 bibliography_candidates.append(
-                    _SourceSearchResult(
+                    SourceSearchResult(
                         work_id=work_id,
                         score=0.92,
                         reason=(
@@ -419,10 +437,10 @@ class _CitationSourceSearcher:
         *,
         provider_rank: dict[str, float] | None = None,
         minimum_score: float = 0,
-    ) -> list[_SourceSearchResult]:
+    ) -> list[SourceSearchResult]:
         dois, arxivs, openalex_ids, titles = known_work_keys(excluded_references)
         paper_title = normalize_title(paper.title)
-        ranked: list[_SourceSearchResult] = []
+        ranked: list[SourceSearchResult] = []
         for work in works:
             if work.doi and work.doi.lower() in dois:
                 continue
@@ -442,7 +460,7 @@ class _CitationSourceSearcher:
             providers = ", ".join(sorted(work.provider_ids))
             ranked_by_provider = bool(provider_rank and work.id in provider_rank)
             ranked.append(
-                _SourceSearchResult(
+                SourceSearchResult(
                     work_id=work.id,
                     score=score,
                     reason=(
@@ -460,7 +478,7 @@ class _CitationSourceSearcher:
         return ranked
 
 
-class _SourceSupportVerifier:
+class SourceSupportVerifier:
     def __init__(
         self,
         client: AsyncOpenAI,
@@ -483,6 +501,7 @@ class _SourceSupportVerifier:
                 supports_claim=True,
                 confidence=0.5,
                 explanation="AI verification is not configured.",
+                evidence="",
             )
         payload = {
             "model": self._model,
@@ -518,23 +537,23 @@ def _claim_hash(claim_text: str) -> str:
     return hashlib.sha256(claim_text.strip().lower().encode()).hexdigest()
 
 
-def _source_query(paper: Paper, finding: CitationAuditFindingRecord) -> str:
+def source_query(paper: Paper, claim: SourceClaim) -> str:
     # Put the claim first: local search keeps a bounded token window, and the
     # claim's distinctive terms are more useful than a generic paper title.
-    parts = [finding.claim_text, finding.section_title, paper.title]
+    parts = [claim.claim_text, claim.section_title, paper.title]
     return ". ".join(
         part.strip() for part in parts if part and part.strip()
     )[:1_200]
 
 
-def _nearby_cited_references(
+def nearby_cited_references(
     paper: Paper,
-    finding: CitationAuditFindingRecord,
+    paragraph_id: str,
 ) -> list[Reference]:
     """Exclude only references cited in the finding's paragraph."""
     for section in paper.sections:
         for paragraph in section.paragraphs:
-            if paragraph.id != finding.paragraph_id:
+            if paragraph.id != paragraph_id:
                 continue
             ids = {
                 source_id

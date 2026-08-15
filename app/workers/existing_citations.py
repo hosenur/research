@@ -17,6 +17,7 @@ from app.database.session import get_session_factory
 from app.repositories.claim_citations import ClaimCitationReviewRepository
 from app.repositories.papers import PaperDocumentRepository
 from app.repositories.pipeline import PaperPipelineRepository
+from app.database.models import PaperRecord
 from app.services.claim_citation_review import ClaimCitationReviewer
 
 
@@ -44,6 +45,10 @@ async def run() -> None:
                     pipeline = PaperPipelineRepository(session)
                     await pipeline.begin(paper_id, "existing-citation-review")
                     document = await PaperDocumentRepository(session).get(paper_id)
+                    paper_record = await session.get(PaperRecord, paper_id)
+                    manuscript_revision = (
+                        paper_record.manuscript_revision if paper_record else document.revision
+                    )
                     paper = document.paper
                     if section_ids:
                         allowed = set(section_ids)
@@ -56,13 +61,13 @@ async def run() -> None:
                         ClaimCitationReviewRepository(session),
                         paper_id,
                         paper,
-                        revision=document.revision,
+                        revision=manuscript_revision,
                     )
                 async with get_session_factory()() as session:
                     await PaperPipelineRepository(session).complete(
                         paper_id,
                         "existing-citation-review",
-                        revision=document.revision,
+                        revision=manuscript_revision,
                         progress={"pairs": count},
                     )
                 return {"pairs": count}

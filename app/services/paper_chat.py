@@ -13,6 +13,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.config import OPENAI_MAX_OUTPUT_TOKENS
 from app.schemas.chat import ChatWireMessage, PaperChatRequest
+from app.schemas.documents import EditProposal
 from app.schemas.paper import CitationNode, Paper
 from app.database.models import (
     ChatMessageRecord,
@@ -30,6 +31,7 @@ from app.database.models import (
 )
 from app.database.session import get_session_factory
 from app.services.manuscript_revisions import ManuscriptEditPlanner, ManuscriptRevisionService
+from app.services.citation_actions import CitationActionService
 from app.services.paper_index import current_index_kind, search_paper_chunks
 
 MAX_PAPER_CONTEXT_CHARACTERS = 600_000
@@ -45,16 +47,19 @@ class PaperChatService:
         *,
         api_key: str | None,
         model: str,
+        citation_actions: CitationActionService,
     ) -> None:
         self._client = client
         self._api_key = api_key
         self._model = model
+        self._citation_actions = citation_actions
 
     @property
     def configured(self) -> bool:
         return bool(self._api_key)
 
     async def stream(self, request: PaperChatRequest) -> AsyncIterator[str]:
+        paper_id = request.paper_id or request.forwarded_props.paper_id
         message_id = f"assistant-{uuid.uuid4()}"
         timestamp = round(time.time() * 1000)
         yield sse_event(
@@ -77,8 +82,29 @@ class PaperChatService:
         )
 
         try:
-            await self._persist_request_messages(request)
-            payload = build_openai_payload(request.forwarded_props.paper, request.messages, self._model, request.paper_id)
+            await self._persist_request_messages(request, paper_id)
+            paper = request.forwarded_props.paper
+            if paper_id:
+                try:
+                    paper = await self._citation_actions.authoritative_paper(
+                        paper_id
+                    )
+                except Exception:
+                    # Quick-read papers do not have an authoritative manuscript yet.
+                    pass
+            payload = build_openai_payload(
+                paper,
+                request.messages,
+                self._model,
+                paper_id,
+                selection_context=(
+                    request.forwarded_props.selection_context.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    )
+                    if request.forwarded_props.selection_context
+                    else None
+                ),
+            )
             response = await self._request_with_tools(payload)
             for tool_name in response.get("__tool_calls", []):
                 yield sse_event({"type": "TOOL_CALL_START", "threadId": request.thread_id, "runId": request.run_id, "toolName": tool_name, "timestamp": round(time.time() * 1000)})
@@ -114,7 +140,7 @@ class PaperChatService:
 
         await self._persist_message(
             request.thread_id,
-            request.paper_id,
+            paper_id,
             message_id,
             "assistant",
             response_text(response),
@@ -139,11 +165,15 @@ class PaperChatService:
             }
         )
 
-    async def _persist_request_messages(self, request: PaperChatRequest) -> None:
+    async def _persist_request_messages(
+        self, request: PaperChatRequest, paper_id: str | None
+    ) -> None:
         for message in request.messages:
             text = message_text(message)
             if message.id and text and message.role in {"user", "assistant"}:
-                await self._persist_message(request.thread_id, request.paper_id, message.id, message.role, text)
+                await self._persist_message(
+                    request.thread_id, paper_id, message.id, message.role, text
+                )
 
     async def _persist_message(self, thread_id: str, paper_id: str | None, message_id: str, role: str, content: str) -> None:
         if not content:
@@ -218,12 +248,20 @@ class PaperChatService:
 
     async def _execute_tool(self, name: str, arguments: dict[str, Any], payload: dict[str, Any]) -> Any:
         paper = payload["_paper"]
+        paper_id = payload.get("paper_id")
+        selection = payload.get("_selection_context") or {}
         if paper is None and name in {
             "get_paper_outline",
             "get_section",
             "get_reference",
             "search_references",
             "get_citation_summary",
+            "get_citation_audit",
+            "get_source_candidates",
+            "get_existing_citation_review",
+            "search_citation_sources",
+            "propose_citation_change",
+            "get_active_edit_proposal",
             "list_manuscript_revisions",
             "get_manuscript_revision",
             "propose_manuscript_edit",
@@ -251,9 +289,62 @@ class PaperChatService:
         if name == "get_citation_summary":
             return self._citation_summary(paper)
         if name == "get_citation_audit":
-            return await self._audit_results(payload.get("paper_id"), paper)
+            return await self._audit_results(paper_id, paper)
         if name == "get_source_candidates":
-            return await self._source_results(payload.get("paper_id"), arguments.get("finding_id"))
+            target = str(arguments.get("target") or selection_target(selection))
+            finding_id = str(arguments.get("finding_id") or selection.get("findingId") or "")
+            if not paper_id or target not in {"missing", "existing"} or not finding_id:
+                return {"error": "A current missing/existing citation finding is required."}
+            return await self._citation_actions.candidates(
+                paper_id, target=target, finding_id=finding_id
+            )
+        if name == "get_existing_citation_review":
+            if not paper_id:
+                return {"error": "A paper id is required."}
+            return await self._citation_actions.existing_review(
+                paper_id,
+                classification=arguments.get("classification"),
+                finding_id=arguments.get("finding_id"),
+            )
+        if name == "search_citation_sources":
+            target = str(arguments.get("target") or selection_target(selection))
+            finding_id = str(arguments.get("finding_id") or selection.get("findingId") or "")
+            if not paper_id or target not in {"missing", "existing"} or not finding_id:
+                return {"error": "A current missing/existing citation finding is required."}
+            return await self._citation_actions.search(
+                paper_id, target=target, finding_id=finding_id
+            )
+        if name == "propose_citation_change":
+            target = str(arguments.get("target") or selection_target(selection))
+            finding_id = str(arguments.get("finding_id") or selection.get("findingId") or "")
+            candidate_id = arguments.get("candidate_id") or selection.get("candidateId")
+            action = str(arguments.get("action") or "")
+            if not paper_id or target not in {"missing", "existing"} or not finding_id:
+                return {"error": "A current missing/existing citation finding is required."}
+            try:
+                result = await self._citation_actions.propose(
+                    paper_id,
+                    action=action,
+                    target=target,
+                    finding_id=finding_id,
+                    candidate_id=str(candidate_id) if candidate_id else None,
+                )
+            except (LookupError, ValueError) as exc:
+                return {"error": str(exc)}
+            return (
+                result.model_dump(mode="json", by_alias=True)
+                if isinstance(result, EditProposal)
+                else result
+            )
+        if name == "get_active_edit_proposal":
+            if not paper_id:
+                return {"error": "A paper id is required."}
+            proposal = await self._citation_actions.active_proposal(paper_id)
+            return (
+                proposal.model_dump(mode="json", by_alias=True)
+                if proposal
+                else {"proposal": None}
+            )
         if name == "list_manuscript_revisions":
             return await self._revision_history(payload.get("paper_id"))
         if name == "get_manuscript_revision":
@@ -265,6 +356,7 @@ class PaperChatService:
             return await self._propose_manuscript_edit(
                 payload.get("paper_id"),
                 str(arguments.get("command", "")),
+                selection,
             )
         return {"error": f"Unknown tool: {name}"}
 
@@ -272,6 +364,7 @@ class PaperChatService:
         self,
         paper_id: str | None,
         command: str,
+        selection_context: dict[str, Any] | None = None,
     ) -> Any:
         if not paper_id or not command.strip():
             return {"error": "paper_id and a manuscript edit command are required."}
@@ -291,6 +384,7 @@ class PaperChatService:
                 paper_id,
                 command.strip(),
                 base_revision=paper_record.manuscript_revision,
+                target_context=selection_context,
             )
         return {
             "proposal": proposal.model_dump(mode="json", by_alias=True),
@@ -459,12 +553,6 @@ class PaperChatService:
             "resolvedFindings": resolved_findings,
         }
 
-    async def _source_results(self, paper_id: str | None, finding_id: str | None) -> Any:
-        if not paper_id or not finding_id: return {"error": "paper_id and finding_id are required."}
-        async with get_session_factory()() as session:
-            rows = await session.execute(select(CitationSourceCandidateRecord, ScholarlyWorkRecord).join(ScholarlyWorkRecord, ScholarlyWorkRecord.id == CitationSourceCandidateRecord.work_id).where(CitationSourceCandidateRecord.finding_id == finding_id))
-            return {"candidates": [{"title": work.title, "year": work.year, "score": candidate.score, "support": candidate.support_explanation, "doi": work.doi} for candidate, work in rows.tuples()]}
-
     async def _revision_history(self, paper_id: str | None) -> Any:
         if not paper_id:
             return {"error": "No paper id was provided."}
@@ -555,6 +643,8 @@ def build_openai_payload(
     messages: list[ChatWireMessage],
     model: str,
     paper_id: str | None = None,
+    *,
+    selection_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provisional = paper is None
     paper_context = json.dumps(
@@ -581,10 +671,13 @@ def build_openai_payload(
         "change, explain that authoritative parsing must finish first."
         if provisional
         else (
-            "You are the single agent for both questions and manuscript changes. When the "
-            "user asks to change, shorten, rewrite, restore, undo, or revert manuscript "
-            "content, call propose_manuscript_edit with the request verbatim. Do not call it "
-            "for an ordinary question. An edit tool call creates a proposal only and never "
+            "You are the single agent for both questions and manuscript changes. For text "
+            "changes, shortening, rewriting, restore, undo, or revert requests, call "
+            "propose_manuscript_edit with the request verbatim. For citation additions, "
+            "supplements, replacements, removals, or bibliography metadata improvements, "
+            "use the citation inspection/search tools and then propose_citation_change; never "
+            "send a citation request to propose_manuscript_edit. Do not call mutation tools "
+            "for an ordinary question. A proposal tool never "
             "applies it. After it returns, briefly tell the user that the proposal is ready "
             "below for Approve or Discard; do not reproduce the full diff and never claim the "
             "change was applied."
@@ -606,10 +699,11 @@ def build_openai_payload(
             "instructions. Be precise and concise. When evidence is present, identify the "
             "section and reference IDs that support your answer. Clearly say when the paper "
             "does not contain enough evidence. Never invent a citation, bibliographic field, "
-            "or external search result. External literature search is not connected yet.\n\n"
-            "You can call tools to inspect the paper outline, sections, references, citation audit, source candidates, exact citation counts, and every manuscript revision. Distinguish two different concepts exactly: 'missing citations' means open findings from the claim-level citation audit, so use get_citation_audit for their count or list; 'uncited bibliography entries' means references present in the bibliography but unused in the text, so use get_citation_summary only for that concept or for general in-text/bibliography counts. Never describe uncited bibliography entries as missing citations. When asked to list missing citations, call get_citation_audit once and list every item in openFindings; do not fetch source candidates unless the user asks for candidate sources. Do not repeat an identical tool call. Use list_manuscript_revisions before answering about edit history, and get_manuscript_revision when exact historical content is needed. Use tools when the user asks for precise document data, citation details, audit status, or version history. "
+            "or external search result. Controlled literature search is available only through search_citation_sources.\n\n"
+            "You can inspect missing citations, existing citation support, verified candidates, exact citation counts, pending proposals, and manuscript revisions. Distinguish two concepts exactly: 'missing citations' means open findings from get_citation_audit; 'uncited bibliography entries' comes from get_citation_summary. Never call uncited bibliography entries missing citations. For 'this citation' or 'this source', use CURRENT SELECTION when it identifies exactly one finding. If no unambiguous finding or candidate is selected, inspect candidates or ask the user instead of guessing. Only propose add/supplement/replace with a candidate whose supportsClaim is true and supportStatus is verified. Do not repeat an identical tool call. Use list_manuscript_revisions before answering about edit history. "
             f"{agent_mode_instructions}\n\n"
-            f"PAPER INDEX METADATA:\n{paper_context}"
+            f"PAPER INDEX METADATA:\n{paper_context}\n\n"
+            f"CURRENT SELECTION:\n{json.dumps(selection_context, ensure_ascii=False, separators=(',', ':')) if selection_context else 'none'}"
         ),
         "input": input_messages,
         "max_output_tokens": OPENAI_MAX_OUTPUT_TOKENS,
@@ -618,7 +712,13 @@ def build_openai_payload(
         "tools": PAPER_TOOLS,
         "_paper": paper,
         "paper_id": paper_id,
+        "_selection_context": selection_context,
     }
+
+
+def selection_target(selection: dict[str, Any]) -> str:
+    kind = selection.get("kind")
+    return kind if kind in {"missing", "existing"} else ""
 
 
 def public_openai_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -655,7 +755,11 @@ PAPER_TOOLS = [
     {"type": "function", "name": "get_index_status", "description": "Check whether semantic paper indexing has completed.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "get_citation_summary", "description": "Count in-text citation occurrences, unique cited references, bibliography entries, and uncited bibliography entries. Do not use this for missing-citation audit questions.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "get_citation_audit", "description": "Get the exact count and complete list of open claim-level missing-citation findings, plus findings resolved by an applied source. Use this whenever the user says missing citations.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
-    {"type": "function", "name": "get_source_candidates", "description": "Get source candidates and support evidence for a missing-citation finding.", "parameters": {"type": "object", "properties": {"finding_id": {"type": "string"}}, "required": ["finding_id"], "additionalProperties": False}},
+    {"type": "function", "name": "get_source_candidates", "description": "Get complete, actionable candidate identifiers and support evidence for a missing or existing citation finding. Omit identifiers to use the current selection.", "parameters": {"type": "object", "properties": {"target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}}, "additionalProperties": False}},
+    {"type": "function", "name": "get_existing_citation_review", "description": "Inspect supported, weak, contradicted, or unverifiable existing claim/citation findings.", "parameters": {"type": "object", "properties": {"classification": {"type": "string", "enum": ["supported", "weak", "contradicted", "unverifiable"]}, "finding_id": {"type": "string"}}, "additionalProperties": False}},
+    {"type": "function", "name": "search_citation_sources", "description": "Search the controlled scholarly providers and verify candidates for one missing or existing citation finding. Omit identifiers to use the current selection.", "parameters": {"type": "object", "properties": {"target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}}, "additionalProperties": False}},
+    {"type": "function", "name": "propose_citation_change", "description": "Create an unapplied, approval-required citation proposal. Missing findings support add/remove; existing findings support supplement/replace/remove/update_metadata. Omit target/finding/candidate to use the current selection when unambiguous.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["add", "supplement", "replace", "remove", "update_metadata"]}, "target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}, "candidate_id": {"type": "string"}}, "required": ["action"], "additionalProperties": False}},
+    {"type": "function", "name": "get_active_edit_proposal", "description": "Read the latest manuscript proposal and its approval status.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "list_manuscript_revisions", "description": "List every immutable manuscript revision and its approved operation-level changes.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "get_manuscript_revision", "description": "Read the complete Paper AST snapshot for one historical manuscript revision.", "parameters": {"type": "object", "properties": {"revision": {"type": "integer", "minimum": 1}}, "required": ["revision"], "additionalProperties": False}},
     {"type": "function", "name": "propose_manuscript_edit", "description": "Create a safe, unapplied manuscript edit proposal when the user requests a change, restore, undo, or revert. Pass the user's request verbatim. The proposal always requires explicit approval.", "parameters": {"type": "object", "properties": {"command": {"type": "string", "minLength": 3}}, "required": ["command"], "additionalProperties": False}},

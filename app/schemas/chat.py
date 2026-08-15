@@ -14,8 +14,24 @@ class ChatWireMessage(ApiModel):
     parts: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class AgentSelectionContext(ApiModel):
+    kind: Literal["missing", "existing", "reference"]
+    label: str | None = None
+    finding_id: str | None = None
+    candidate_id: str | None = None
+    reference_id: str | None = None
+    citation_id: str | None = None
+    paragraph_id: str | None = None
+    text: str | None = None
+    classification: Literal[
+        "supported", "weak", "contradicted", "unverifiable"
+    ] | None = None
+
+
 class ChatForwardedProps(ApiModel):
     paper: Paper | None = None
+    paper_id: str | None = None
+    selection_context: AgentSelectionContext | None = None
 
 
 class PaperChatRequest(ApiModel):

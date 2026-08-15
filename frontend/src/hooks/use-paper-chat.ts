@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { UIMessage } from '@tanstack/ai'
 import { fetchServerSentEvents, useChat } from '@tanstack/ai-react'
 import useSWR from 'swr'
+import type { PaperAgentSelectionContext } from '@/lib/manuscript-focus'
 
 const INITIAL_MESSAGE: UIMessage = {
   id: 'paper-agent-intro',
@@ -43,7 +44,11 @@ async function fetchChatHistory(url: string): Promise<ChatHistoryResponse> {
   return response.json() as Promise<ChatHistoryResponse>
 }
 
-export function usePaperChat(paper: unknown, paperId?: string) {
+export function usePaperChat(
+  paper: unknown,
+  paperId?: string,
+  selectionContext?: PaperAgentSelectionContext | null,
+) {
   const [threadId] = useState(
     () => {
       const key = `paper-chat-thread:${paperId ?? 'unscoped'}`
@@ -60,10 +65,10 @@ export function usePaperChat(paper: unknown, paperId?: string) {
   const connection = useMemo(
     () =>
       fetchServerSentEvents('/api/chat', {
-        body: { paper, paperId },
+        body: { paper, paperId, selectionContext },
         fetchClient: paperAgentFetch,
       }),
-    [paper, paperId],
+    [paper, paperId, selectionContext],
   )
 
   const chat = useChat({

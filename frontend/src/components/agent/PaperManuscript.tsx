@@ -1,29 +1,34 @@
 import { CheckCircleIcon, WarningIcon } from '@phosphor-icons/react'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
+import type { ManuscriptSelection } from '@/lib/manuscript-focus'
 import type {
-  PaperCitationNodeJson,
   PaperJson,
   PaperParagraphJson,
 } from '@/lib/paper'
 
-export interface ManuscriptFocus {
-  paragraphId: string
-  startOffset?: number
-  endOffset?: number
-  text?: string
+export interface ManuscriptFocus extends ManuscriptSelection {
+  highlighted: boolean
   token: number
+}
+
+function FocusHighlight({
+  children,
+  className,
+  focus,
+  ...props
+}: React.ComponentProps<'mark'> & { focus: ManuscriptFocus }) {
+  return focus.highlighted ? (
+    <mark {...props} className={className}>
+      {children}
+    </mark>
+  ) : (
+    <span {...props}>{children}</span>
+  )
 }
 
 function authorName(author: NonNullable<PaperJson['authors']>[number]) {
   return author.literal || [author.given, author.family].filter(Boolean).join(' ')
-}
-
-function citationLabel(citation: PaperCitationNodeJson) {
-  const sourceIds = citation.items.map((item) => item.sourceId)
-  return sourceIds.length
-    ? `${citation.rawText} · ${sourceIds.join(', ')}`
-    : `${citation.rawText} · unresolved`
 }
 
 function Paragraph({
@@ -70,12 +75,13 @@ function Paragraph({
               {overlaps ? (
                 <>
                   {node.text.slice(0, localStart)}
-                  <mark
+                  <FocusHighlight
                     className="review-text-highlight rounded-sm px-0.5 text-inherit"
+                    focus={focus!}
                     key={`${focus?.token}:${nodeStart}`}
                   >
                     {node.text.slice(localStart, localEnd)}
-                  </mark>
+                  </FocusHighlight>
                   {node.text.slice(localEnd)}
                 </>
               ) : (
@@ -84,18 +90,27 @@ function Paragraph({
             </span>
           )
         }
+        if (overlaps && focus) {
+          return (
+            <FocusHighlight
+              className="review-text-highlight mx-0.5 rounded px-1 py-0.5 font-medium text-inherit"
+              data-citation-id={node.id ?? undefined}
+              focus={focus}
+              key={node.id ?? `${paragraph.id}:citation:${index}`}
+            >
+              {node.rawText}
+            </FocusHighlight>
+          )
+        }
         return (
           <span
             className={
-              overlaps
-                ? 'review-text-highlight mx-0.5 rounded px-1 py-0.5 font-medium text-inherit'
-                : node.resolution.status === 'resolved'
+              node.resolution.status === 'resolved'
                 ? 'mx-0.5 rounded bg-primary-subtle px-1 py-0.5 font-medium text-primary-subtle-fg'
                 : 'mx-0.5 rounded bg-warning-subtle px-1 py-0.5 font-medium text-warning-subtle-fg'
             }
             data-citation-id={node.id ?? undefined}
             key={node.id ?? `${paragraph.id}:citation:${index}`}
-            title={citationLabel(node)}
           >
             {node.rawText}
           </span>
@@ -119,9 +134,9 @@ export function PaperManuscript({
   return (
     <article className="mx-auto w-full max-w-4xl px-5 py-8 sm:px-9 sm:py-12">
       <header className="mb-9 border-b border-border pb-7">
-        <Card className="mb-7 bg-muted/40 shadow-none">
-          <CardContent className="space-y-3 px-4 py-3">
-            <div className="flex flex-wrap gap-2">
+        <Card className="mb-5 bg-muted/40 shadow-none">
+          <CardContent className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2">
+            <div className="flex flex-wrap gap-1.5">
               {quality ? (
                 <Badge intent={quality.status === 'usable' ? 'success' : 'warning'}>
                   {quality.status === 'usable' ? (
@@ -143,20 +158,20 @@ export function PaperManuscript({
               ) : null}
             </div>
             {quality ? (
-              <dl className="grid grid-cols-2 gap-4 border-t border-border pt-3 text-sm sm:grid-cols-4">
-                <div>
+              <dl className="ml-auto flex flex-wrap items-center divide-x divide-border text-xs">
+                <div className="flex items-baseline gap-1 px-2 first:pl-0">
                   <dt className="text-muted-fg">Sections</dt>
                   <dd className="font-semibold">{quality.sectionCount}</dd>
                 </div>
-                <div>
+                <div className="flex items-baseline gap-1 px-2">
                   <dt className="text-muted-fg">Sentences</dt>
                   <dd className="font-semibold">{quality.sentenceCount}</dd>
                 </div>
-                <div>
+                <div className="flex items-baseline gap-1 px-2">
                   <dt className="text-muted-fg">Citations</dt>
                   <dd className="font-semibold">{quality.citationCount}</dd>
                 </div>
-                <div>
+                <div className="flex items-baseline gap-1 px-2 last:pr-0">
                   <dt className="text-muted-fg">Resolved</dt>
                   <dd className="font-semibold">
                     {Math.round(quality.resolvedTargetRatio * 100)}%

@@ -5,7 +5,12 @@ import useSWRMutation from 'swr/mutation'
 export interface EditOperation {
   id: string
   position: number
-  operationType: 'replace_text' | 'insert_citation' | 'remove_citation' | 'restore_revision'
+  operationType:
+    | 'replace_text'
+    | 'insert_citation'
+    | 'remove_citation'
+    | 'restore_revision'
+    | 'citation_change'
   nodeIds: string[]
   beforeText: string
   afterText: string
@@ -14,12 +19,19 @@ export interface EditOperation {
   validationError?: string | null
   approved: boolean
   bibliographyChange?: {
-    action: 'add' | 'reuse' | 'remove' | 'retain'
+    action: 'add' | 'reuse' | 'remove' | 'retain' | 'update'
     referenceId: string
     citationMarker?: string | null
     beforeText?: string | null
     afterText?: string | null
   } | null
+  bibliographyChanges?: Array<{
+    action: 'add' | 'reuse' | 'remove' | 'retain' | 'update'
+    referenceId: string
+    citationMarker?: string | null
+    beforeText?: string | null
+    afterText?: string | null
+  }>
 }
 
 export interface EditProposal {
@@ -97,6 +109,9 @@ export function useManuscriptEdits(paperId: string) {
       setProposal(null)
       await Promise.all([
         mutateGlobal(`/api/papers/${paperId}`),
+        mutateGlobal(`/api/papers/${paperId}/citation-audit`),
+        mutateGlobal(`/api/papers/${paperId}/claim-citation-review`),
+        mutateGlobal(`/api/papers/${paperId}/pipeline`),
         mutateLatest(approved, { revalidate: false }),
       ])
       return approved

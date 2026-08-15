@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import useSWR from 'swr'
 import useSWRMutation from 'swr/mutation'
+
+export type PaperExportFormat = 'latex' | 'pdf'
 
 interface CitationStyleStatus {
   paperId: string
@@ -56,6 +58,12 @@ async function createExport(url: string, { arg }: { arg: { revision: number } })
 
 export function usePaperExport(paperId: string, revision: number) {
   const [exportId, setExportId] = useState<string | null>(null)
+  const [pendingDownload, setPendingDownload] = useState<{
+    exportId: string
+    format: PaperExportFormat
+  } | null>(null)
+  const [downloadError, setDownloadError] = useState<Error | null>(null)
+  const [downloadedAt, setDownloadedAt] = useState<number | null>(null)
   const styleUrl = `/api/papers/${paperId}/citation-style`
   const style = useSWR<CitationStyleStatus>(styleUrl, fetchJson)
   const confirm = useSWRMutation(styleUrl, confirmStyle)
@@ -68,19 +76,46 @@ export function usePaperExport(paperId: string, revision: number) {
         latest?.status === 'completed' || latest?.status === 'failed' ? 0 : 1_500,
     },
   )
+
+  useEffect(() => {
+    const current = status.data
+    if (!pendingDownload || current?.id !== pendingDownload.exportId) return
+    if (current.status === 'failed') {
+      setPendingDownload(null)
+      return
+    }
+    if (current.status !== 'completed') return
+
+    const downloadUrl =
+      pendingDownload.format === 'latex' ? current.latexUrl : current.pdfUrl
+    if (!downloadUrl) {
+      setDownloadError(new Error('The requested export file was not generated.'))
+      setPendingDownload(null)
+      return
+    }
+
+    window.location.assign(`/api${downloadUrl}`)
+    setDownloadedAt(Date.now())
+    setPendingDownload(null)
+  }, [pendingDownload, status.data])
+
   return {
     confirmStyle: async (styleId: string) => {
       const next = await confirm.trigger({ styleId })
       await style.mutate(next, { revalidate: false })
     },
-    createExport: async () => {
+    downloadExport: async (format: PaperExportFormat) => {
+      setDownloadError(null)
+      setDownloadedAt(null)
       const next = await create.trigger({ revision })
       setExportId(next.id)
-      await status.mutate(next, { revalidate: false })
+      setPendingDownload({ exportId: next.id, format })
     },
-    error: style.error ?? confirm.error ?? create.error ?? status.error,
+    downloadedAt,
+    error: downloadError ?? style.error ?? confirm.error ?? create.error ?? status.error,
     export: status.data,
-    isCreating: create.isMutating,
+    isDownloading: create.isMutating || pendingDownload !== null,
+    isLoadingStyle: style.isLoading,
     isSavingStyle: confirm.isMutating,
     style: style.data,
   }

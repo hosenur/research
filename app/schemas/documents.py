@@ -76,7 +76,7 @@ class EditCommandRequest(ApiModel):
 
 
 class BibliographyChange(ApiModel):
-    action: Literal["add", "reuse", "remove", "retain"]
+    action: Literal["add", "reuse", "remove", "retain", "update"]
     reference_id: str
     citation_marker: str | None = None
     before_text: str | None = None
@@ -91,6 +91,7 @@ class EditOperation(ApiModel):
         "insert_citation",
         "remove_citation",
         "restore_revision",
+        "citation_change",
     ]
     node_ids: list[str] = Field(default_factory=list)
     before_text: str
@@ -100,6 +101,7 @@ class EditOperation(ApiModel):
     validation_error: str | None = None
     approved: bool = False
     bibliography_change: BibliographyChange | None = None
+    bibliography_changes: list[BibliographyChange] = Field(default_factory=list)
 
 
 class EditProposal(ApiModel):

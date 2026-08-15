@@ -6,6 +6,7 @@ from bullmq import Job, Queue, Worker
 
 from app.config import OPENAI_TIMEOUT_SECONDS, PAPER_INDEX_QUEUE_NAME, bullmq_options, openai_api_key, openai_base_url
 from app.database.session import get_session_factory
+from app.database.models import PaperRecord
 from app.repositories.papers import PaperDocumentRepository
 from app.repositories.pipeline import PaperPipelineRepository
 from app.services.paper_index import PaperIndexer
@@ -25,17 +26,21 @@ async def run() -> None:
                         paper_id, "authoritative-index"
                     )
                     document = await PaperDocumentRepository(session).get(paper_id)
+                    paper_record = await session.get(PaperRecord, paper_id)
+                    manuscript_revision = (
+                        paper_record.manuscript_revision if paper_record else document.revision
+                    )
                     count = await indexer.index(
                         session,
                         paper_id,
                         document.paper,
-                        revision=document.revision,
+                        revision=manuscript_revision,
                     )
                 async with get_session_factory()() as session:
                     await PaperPipelineRepository(session).complete(
                         paper_id,
                         "authoritative-index",
-                        revision=document.revision,
+                        revision=manuscript_revision,
                         progress={"chunks": count, "indexKind": "authoritative"},
                     )
                 return {"chunks": count}

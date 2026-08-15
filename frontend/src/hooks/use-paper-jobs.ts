@@ -12,6 +12,7 @@ export interface PaperJob {
 
 interface PaperJobsResponse {
   paperId: string
+  supportsStageRetry: boolean
   stages: Array<{
     name: string
     status: PaperJob['status']
@@ -23,14 +24,77 @@ interface PaperJobsResponse {
   }>
 }
 
+interface PaperPipelineResponse extends Omit<PaperJobsResponse, 'supportsStageRetry'> {}
+
+interface LegacyPaperJobsResponse {
+  paperId: string
+  jobs: Array<{
+    name: string
+    status: Exclude<PaperJob['status'], 'skipped'>
+    progress: Record<string, unknown>
+    error?: string | null
+  }>
+}
+
+const legacyStageNames: Record<string, string> = {
+  'quick-read': 'quick-extraction',
+  parse: 'authoritative-parse',
+  index: 'authoritative-index',
+  openalex: 'reference-resolution',
+  'citation-audit': 'missing-citation-review',
+}
+
+class PaperJobsRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
+async function responseError(response: Response) {
+  const payload = (await response.json().catch(() => null)) as { detail?: string } | null
+  return new PaperJobsRequestError(
+    payload?.detail ?? `The API returned HTTP ${response.status}.`,
+    response.status,
+  )
+}
+
 async function fetchJobs(url: string): Promise<PaperJobsResponse> {
   const response = await fetch(url)
-  if (!response.ok) throw new Error(`The API returned HTTP ${response.status}.`)
-  return response.json() as Promise<PaperJobsResponse>
+  if (response.ok) {
+    const pipeline = (await response.json()) as PaperPipelineResponse
+    return { ...pipeline, supportsStageRetry: true }
+  }
+
+  if (response.status === 404) {
+    const legacyResponse = await fetch(url.replace(/\/pipeline$/, '/jobs'))
+    if (legacyResponse.ok) {
+      const legacy = (await legacyResponse.json()) as LegacyPaperJobsResponse
+      return {
+        paperId: legacy.paperId,
+        supportsStageRetry: false,
+        stages: legacy.jobs.map((job) => ({
+          name: legacyStageNames[job.name] ?? job.name,
+          status: job.status,
+          attempt: 0,
+          revision: 1,
+          progress: job.progress,
+          error: job.error,
+        })),
+      }
+    }
+    throw await responseError(legacyResponse)
+  }
+
+  throw await responseError(response)
 }
 
 export function usePaperJobs(paperId: string) {
-  const request = useSWR<PaperJobsResponse>(`/api/papers/${paperId}/pipeline`, fetchJobs, {
+  const request = useSWR<PaperJobsResponse, PaperJobsRequestError>(`/api/papers/${paperId}/pipeline`, fetchJobs, {
+    errorRetryInterval: 1_500,
+    keepPreviousData: true,
     refreshInterval: 1_500,
     revalidateOnFocus: true,
   })
@@ -55,6 +119,7 @@ export function usePaperJobs(paperId: string) {
     data: request.data
       ? {
           paperId: request.data.paperId,
+          supportsStageRetry: request.data.supportsStageRetry,
           jobs: request.data.stages.map((stage) => ({
             ...stage,
             jobId: `${paperId}:${stage.name}`,

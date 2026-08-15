@@ -122,21 +122,28 @@ async def decide_citation_candidate(
     revisions: ManuscriptRevisions,
 ) -> dict[str, str | EditProposal | None]:
     await documents.get(paper_id)
-    try:
-        candidate = await audits.decide_candidate(paper_id, finding_id, candidate_id, payload.decision)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     proposal = None
     if payload.decision == "accepted":
         try:
             proposal = await revisions.propose_verified_source(
                 paper_id, finding_id, candidate_id
             )
+        except RevisionConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (LookupError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        decision = "pending"
+    else:
+        try:
+            candidate = await audits.decide_candidate(
+                paper_id, finding_id, candidate_id, payload.decision
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        decision = candidate.decision
     return {
-        "candidateId": candidate.id,
-        "decision": candidate.decision,
+        "candidateId": candidate_id,
+        "decision": decision,
         "editProposal": proposal,
     }
 
@@ -375,6 +382,7 @@ async def start_section_scoped_review(
     audits: CitationAudits,
     citation_queue: CitationAuditQueue,
     existing_queue: ClaimCitationReviewQueue,
+    index_queue: Annotated[Queue, Depends(get_paper_index_queue)],
     pipeline: PaperPipelineRepositoryDependency,
 ) -> dict[str, object]:
     document = await documents.get(paper_id)
@@ -479,9 +487,102 @@ async def approve_manuscript_edit(
     proposal_id: str,
     payload: EditApprovalRequest,
     revisions: ManuscriptRevisions,
+    documents: PaperDocuments,
+    audits: CitationAudits,
+    citation_queue: CitationAuditQueue,
+    existing_queue: ClaimCitationReviewQueue,
+    pipeline: PaperPipelineRepositoryDependency,
 ) -> EditProposal:
     try:
-        return await revisions.approve(paper_id, proposal_id, payload.operation_ids)
+        approved = await revisions.approve(
+            paper_id, proposal_id, payload.operation_ids
+        )
+        if approved.approved_revision:
+            index_job_id = (
+                f"paper-index-{paper_id}-revision-{approved.approved_revision}"
+            )
+            if await Job.fromId(index_queue, index_job_id) is None:
+                await index_queue.add(
+                    "index-paper",
+                    {"paperId": paper_id},
+                    {
+                        "jobId": index_job_id,
+                        "attempts": 3,
+                        "backoff": {"type": "exponential", "delay": 2_000},
+                        "removeOnComplete": False,
+                        "removeOnFail": False,
+                    },
+                )
+            await pipeline.queued(
+                paper_id,
+                "authoritative-index",
+                progress={"manuscriptRevision": approved.approved_revision},
+            )
+        citation_operations = [
+            operation
+            for operation in approved.operations
+            if operation.approved
+            and operation.operation_type
+            in {"insert_citation", "remove_citation", "citation_change"}
+        ]
+        if citation_operations and approved.approved_revision:
+            document = await documents.get(paper_id)
+            paragraph_ids = {
+                node_id
+                for operation in citation_operations
+                for node_id in operation.node_ids
+            }
+            section_ids = [
+                section.id
+                for section in document.paper.sections
+                if any(
+                    paragraph.id in paragraph_ids for paragraph in section.paragraphs
+                )
+            ]
+            audit = await audits.create_or_get(paper_id, claim_audit_model())
+            jobs = [
+                (
+                    citation_queue,
+                    "audit-missing-citations",
+                    {
+                        "paperId": paper_id,
+                        "auditId": audit.id,
+                        "sectionIds": section_ids,
+                    },
+                    f"citation-audit-{paper_id}-revision-{approved.approved_revision}",
+                    "missing-citation-review",
+                ),
+                (
+                    existing_queue,
+                    "review-existing-citations",
+                    {"paperId": paper_id, "sectionIds": section_ids},
+                    f"claim-citation-review-{paper_id}-revision-{approved.approved_revision}",
+                    "existing-citation-review",
+                ),
+            ]
+            for queue, name, data, job_id, stage in jobs:
+                if await Job.fromId(queue, job_id) is None:
+                    await queue.add(
+                        name,
+                        data,
+                        {
+                            "jobId": job_id,
+                            "attempts": 4,
+                            "backoff": {"type": "exponential", "delay": 2_000},
+                            "removeOnComplete": False,
+                            "removeOnFail": False,
+                        },
+                    )
+                await pipeline.queued(
+                    paper_id,
+                    stage,
+                    progress={
+                        "sectionIds": section_ids,
+                        "scope": "approved-edit",
+                        "manuscriptRevision": approved.approved_revision,
+                    },
+                )
+        return approved
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RevisionConflictError as exc:

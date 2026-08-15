@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
-import { ArrowUturnLeftIcon } from '@heroicons/react/24/solid'
 import {
   ArrowSquareOutIcon,
+  ArrowUUpLeftIcon,
   CheckCircleIcon,
   SpinnerGapIcon,
   WarningDiamondIcon,
@@ -16,7 +16,17 @@ import { Tab, TabList, TabPanel, Tabs } from '@/components/ui/tabs'
 import type { CitationAuditFinding } from '@/hooks/use-citation-audit'
 import type { ClaimCitationFinding } from '@/hooks/use-claim-citation-review'
 import type { ManuscriptEditFlow } from '@/hooks/use-manuscript-edits'
+import {
+  missingReferenceSource,
+  preferredMissingReferenceCandidate,
+  type ManuscriptSelection,
+} from '@/lib/manuscript-focus'
 import type { PaperJson } from '@/lib/paper'
+
+export type ReviewCategory =
+  | 'missing'
+  | 'dismissed'
+  | ClaimCitationFinding['classification']
 
 interface ReviewInboxProps {
   edits: ManuscriptEditFlow
@@ -36,13 +46,10 @@ interface ReviewInboxProps {
     findings: ClaimCitationFinding[]
     error?: string | null
   }
-  onFindingSelect: (
-    paragraphId: string,
-    startOffset?: number,
-    endOffset?: number,
-    text?: string,
-  ) => void
+  onCategoryChange: (category: ReviewCategory) => void
+  onFindingSelect: (selection: ManuscriptSelection) => void
   paper: PaperJson
+  selectedCategory: ReviewCategory
 }
 
 function DismissedCitationsPanel({
@@ -93,17 +100,29 @@ function DismissedCitationsPanel({
                   “{finding.claimText}”
                 </p>
                 <p className="mt-1 text-xs/5 text-muted-fg">{finding.explanation}</p>
-                <div className="mt-3 flex flex-wrap gap-2">
+                <div className="mt-3 grid grid-cols-2 gap-2">
                   <Button
                     intent="outline"
-                    onPress={() =>
-                      onFindingSelect(
-                        finding.paragraphId,
-                        finding.startOffset,
-                        finding.endOffset,
-                        finding.sourceText,
+                    onPress={() => {
+                      const candidate = preferredMissingReferenceCandidate(
+                        finding.sourceCandidates,
                       )
-                    }
+                      onFindingSelect({
+                        paragraphId: finding.paragraphId,
+                        startOffset: finding.startOffset,
+                        endOffset: finding.endOffset,
+                        text: finding.sourceText,
+                        source: missingReferenceSource(finding.sourceCandidates),
+                        context: {
+                          kind: 'missing',
+                          label: candidate?.work.title ?? finding.claimText,
+                          findingId: finding.id,
+                          candidateId: candidate?.id,
+                          paragraphId: finding.paragraphId,
+                          text: finding.sourceText,
+                        },
+                      })
+                    }}
                     size="sm"
                   >
                     View in manuscript
@@ -114,7 +133,7 @@ function DismissedCitationsPanel({
                     onPress={() => void restoreFinding(finding.id)}
                     size="sm"
                   >
-                    <ArrowUturnLeftIcon data-slot="icon" />
+                    <ArrowUUpLeftIcon data-slot="icon" />
                     Restore to Missing
                   </Button>
                 </div>
@@ -140,10 +159,12 @@ function ClaimCitationGroup({
   classification,
   findings,
   onFindingSelect,
+  sentenceOffsetsById,
 }: {
   classification: ClaimCitationFinding['classification']
   findings: ClaimCitationFinding[]
   onFindingSelect: ReviewInboxProps['onFindingSelect']
+  sentenceOffsetsById: ReadonlyMap<string, { startOffset: number; endOffset: number }>
 }) {
   const selected = findings.filter((finding) => finding.classification === classification)
   const intent = classification === 'supported' ? 'success' : classification === 'contradicted' ? 'danger' : 'warning'
@@ -170,29 +191,51 @@ function ClaimCitationGroup({
                 {finding.evidenceText ? (
                   <p className="mt-2 border-l-2 border-border pl-2 text-xs/5 text-muted-fg">“{finding.evidenceText}”</p>
                 ) : null}
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Button
-                    intent="outline"
-                    onPress={() =>
-                      onFindingSelect(
-                        finding.paragraphId,
-                        undefined,
-                        undefined,
-                        finding.claimText,
-                      )
-                    }
-                    size="xs"
-                  >
-                    View in manuscript
-                  </Button>
+                <div className="mt-3 flex flex-col items-start gap-2">
                   {finding.sourceUrl ? (
-                    <Link href={finding.sourceUrl} rel="noreferrer" target="_blank">
+                    <Link
+                      className="inline-flex max-w-full items-start gap-1 text-xs/5 [overflow-wrap:anywhere]"
+                      href={finding.sourceUrl}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
                       {finding.workTitle ?? 'Provider source'}
                       <ArrowSquareOutIcon data-slot="icon" />
                     </Link>
                   ) : (
                     <span className="text-xs text-muted-fg">No linkable provider record</span>
                   )}
+                  <Button
+                    intent="outline"
+                    onPress={() => {
+                      const offsets = sentenceOffsetsById.get(
+                        `${finding.paragraphId}:${finding.sentenceId}`,
+                      )
+                      onFindingSelect({
+                        paragraphId: finding.paragraphId,
+                        startOffset: offsets?.startOffset,
+                        endOffset: offsets?.endOffset,
+                        text: finding.claimText,
+                        source: {
+                          title: finding.workTitle?.trim() || finding.referenceId,
+                          url: finding.sourceUrl,
+                        },
+                        context: {
+                          kind: 'existing',
+                          label: finding.workTitle?.trim() || finding.referenceId,
+                          findingId: finding.id,
+                          referenceId: finding.referenceId,
+                          citationId: finding.citationId ?? undefined,
+                          paragraphId: finding.paragraphId,
+                          text: finding.claimText,
+                          classification: finding.classification,
+                        },
+                      })
+                    }}
+                    size="xs"
+                  >
+                    View in manuscript
+                  </Button>
                 </div>
               </li>
             ))}
@@ -205,8 +248,33 @@ function ClaimCitationGroup({
   )
 }
 
-export function ReviewInbox({ edits, existing, missing, onFindingSelect, paper }: ReviewInboxProps) {
+export function ReviewInbox({
+  edits,
+  existing,
+  missing,
+  onCategoryChange,
+  onFindingSelect,
+  paper,
+  selectedCategory,
+}: ReviewInboxProps) {
   const running = !existing || ['not_started', 'queued', 'running'].includes(existing.status)
+  const sentenceOffsetsById = useMemo(
+    () =>
+      new Map(
+        paper.sections.flatMap((section) =>
+          section.paragraphs.flatMap((paragraph) =>
+            (paragraph.sentences ?? []).map(
+              (sentence) =>
+                [
+                  `${paragraph.id}:${sentence.id}`,
+                  { startOffset: sentence.startOffset, endOffset: sentence.endOffset },
+                ] as const,
+            ),
+          ),
+        ),
+      ),
+    [paper],
+  )
   const appliedReferenceIdsByParagraph = useMemo(
     () =>
       new Map(
@@ -241,7 +309,20 @@ export function ReviewInbox({ edits, existing, missing, onFindingSelect, paper }
     [appliedReferenceIdsByParagraph, missing.findings],
   )
   return (
-    <Tabs className="h-full min-h-0 gap-2 self-stretch" defaultSelectedKey="missing">
+    <Tabs
+      className="h-full min-h-0 gap-2 self-stretch"
+      onSelectionChange={(key) => {
+        const category = String(key) as ReviewCategory
+        if (
+          category === 'missing' ||
+          category === 'dismissed' ||
+          groups.some((group) => group.id === category)
+        ) {
+          onCategoryChange(category)
+        }
+      }}
+      selectedKey={selectedCategory}
+    >
       <TabList aria-label="Review finding groups" className="shrink-0 px-2">
         <Tab id="missing">Missing {openMissingCount || ''}</Tab>
         <Tab id="dismissed">
@@ -287,7 +368,12 @@ export function ReviewInbox({ edits, existing, missing, onFindingSelect, paper }
               </CardContent>
             </Card>
           ) : (
-            <ClaimCitationGroup classification={group.id} findings={existing.findings} onFindingSelect={onFindingSelect} />
+            <ClaimCitationGroup
+              classification={group.id}
+              findings={existing.findings}
+              onFindingSelect={onFindingSelect}
+              sentenceOffsetsById={sentenceOffsetsById}
+            />
           )}
         </TabPanel>
       ))}

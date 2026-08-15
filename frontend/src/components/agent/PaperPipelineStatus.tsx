@@ -26,13 +26,18 @@ const labels: Record<string, string> = {
 }
 
 export function PaperPipelineStatus({ paperId }: PaperPipelineStatusProps) {
-  const { data, error, retryStage, retrying } = usePaperJobs(paperId)
+  const { data, error, isLoading, retryStage, retrying } = usePaperJobs(paperId)
 
   return (
     <Card className="shrink-0 bg-overlay shadow-overlay">
       <CardHeader title="Processing status" description="Background work continues while you review" />
       <CardContent className="border-t px-4 py-3">
-        {error ? <p className="text-xs text-danger-subtle-fg">Status unavailable.</p> : (
+        {!data && (isLoading || error) ? (
+          <p className="flex items-center gap-2 text-xs text-muted-fg" role="status">
+            <Processing className="animate-spin" />
+            {error ? 'Reconnecting to processing status…' : 'Loading processing status…'}
+          </p>
+        ) : (
           <ul className="space-y-2">
             {(data?.jobs ?? []).map((job) => (
               <li className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-xs" key={job.jobId}>
@@ -47,7 +52,7 @@ export function PaperPipelineStatus({ paperId }: PaperPipelineStatusProps) {
                   {job.status === 'failed' ? <Warning data-slot="icon" /> : null}
                   {job.status.replace('_', ' ')}
                 </Badge>
-                {job.status === 'failed' ? (
+                {job.status === 'failed' && data?.supportsStageRetry ? (
                   <Button aria-label={`Retry ${labels[job.name] ?? job.name}`} intent="plain" isDisabled={retrying} onPress={() => void retryStage(job.name)} size="sq-xs">
                     <ArrowClockwiseIcon />
                   </Button>
@@ -59,6 +64,12 @@ export function PaperPipelineStatus({ paperId }: PaperPipelineStatusProps) {
               </li>
             ))}
             {!data?.jobs.length && !error ? <li className="text-xs text-muted-fg">No jobs have started.</li> : null}
+            {error && data ? (
+              <li className="flex items-center gap-2 text-xs text-muted-fg" role="status">
+                <Processing className="animate-spin" />
+                Refreshing the latest processing status…
+              </li>
+            ) : null}
           </ul>
         )}
       </CardContent>

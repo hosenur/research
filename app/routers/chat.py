@@ -1,5 +1,6 @@
 from typing import Annotated
 
+import httpx
 from openai import AsyncOpenAI
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -7,28 +8,96 @@ from fastapi.responses import StreamingResponse
 
 from app.config import (
     OPENAI_TIMEOUT_SECONDS,
+    OPENALEX_TIMEOUT_SECONDS,
+    SEMANTIC_SCHOLAR_TIMEOUT_SECONDS,
+    openalex_api_key,
+    openalex_mailto,
+    openalex_proxy,
+    openalex_url,
     openai_api_key,
     openai_base_url,
     openai_chat_model,
+    semantic_scholar_api_key,
+    semantic_scholar_url,
+    source_verification_model,
 )
 from app.schemas.chat import PaperChatRequest
 from app.services.paper_chat import PaperChatService
 from app.database.models import ChatMessageRecord
 from app.database.session import get_session_factory
+from app.repositories.openalex import OpenAlexRepository
+from app.repositories.scholarly_works import ScholarlyWorkRepository
+from app.repositories.semantic_scholar import SemanticScholarRepository
+from app.services.citation_actions import CitationActionService
+from app.services.manuscript_revisions import ManuscriptEditPlanner
+from app.services.source_search import CitationSourceSearcher, SourceSupportVerifier
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 async def get_paper_chat_service():
-    client = AsyncOpenAI(
-        api_key=openai_api_key(),
-        base_url=openai_base_url(),
-        timeout=OPENAI_TIMEOUT_SECONDS,
-    )
-    try:
-        yield PaperChatService(client, api_key=openai_api_key(), model=openai_chat_model())
-    finally:
-        await client.close()
+    mailto = openalex_mailto()
+    openalex_headers = {
+        "User-Agent": (
+            f"folio-paper-parser (mailto:{mailto})"
+            if mailto
+            else "folio-paper-parser/0.1"
+        )
+    }
+    semantic_headers = {}
+    if semantic_scholar_api_key():
+        semantic_headers["x-api-key"] = semantic_scholar_api_key()
+    async with (
+        AsyncOpenAI(
+            api_key=openai_api_key(),
+            base_url=openai_base_url(),
+            timeout=OPENAI_TIMEOUT_SECONDS,
+        ) as client,
+        httpx.AsyncClient(
+            base_url=openalex_url(),
+            timeout=OPENALEX_TIMEOUT_SECONDS,
+            headers=openalex_headers,
+            proxy=openalex_proxy(),
+        ) as openalex_client,
+        httpx.AsyncClient(
+            base_url=semantic_scholar_url(),
+            timeout=SEMANTIC_SCHOLAR_TIMEOUT_SECONDS,
+            headers=semantic_headers,
+        ) as semantic_client,
+    ):
+        session_factory = get_session_factory()
+        works = ScholarlyWorkRepository(session_factory)
+        searcher = CitationSourceSearcher(
+            works,
+            OpenAlexRepository(
+                openalex_client,
+                mailto=mailto,
+                api_key=openalex_api_key(),
+                cache=works,
+            ),
+            SemanticScholarRepository(semantic_client, works),
+        )
+        verifier = SourceSupportVerifier(
+            client,
+            api_key=openai_api_key(),
+            model=source_verification_model(),
+        )
+        planner = ManuscriptEditPlanner(
+            client,
+            api_key=openai_api_key(),
+            model=openai_chat_model(),
+        )
+        yield PaperChatService(
+            client,
+            api_key=openai_api_key(),
+            model=openai_chat_model(),
+            citation_actions=CitationActionService(
+                session_factory,
+                searcher,
+                verifier,
+                planner,
+            ),
+        )
 
 
 PaperAgent = Annotated[PaperChatService, Depends(get_paper_chat_service)]
