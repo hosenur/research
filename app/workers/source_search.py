@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import httpx
 from openai import AsyncOpenAI
@@ -31,6 +32,9 @@ from app.repositories.openalex import OpenAlexRepository
 from app.repositories.scholarly_works import ScholarlyWorkRepository
 from app.repositories.semantic_scholar import SemanticScholarRepository
 from app.services.source_search import build_citation_source_fulfillment
+
+
+logger = logging.getLogger(__name__)
 
 
 async def run() -> None:
@@ -87,7 +91,6 @@ async def run() -> None:
             return {"candidates": result.candidate_count}
 
         queue = Queue(SOURCE_SEARCH_QUEUE_NAME, bullmq_options())
-        await enqueue_pending_source_searches(queue)
         worker = Worker(
             SOURCE_SEARCH_QUEUE_NAME,
             process,
@@ -97,6 +100,8 @@ async def run() -> None:
                 "concurrency": 2,
             },
         )
+        backfill = asyncio.create_task(enqueue_pending_source_searches(queue))
+        backfill.add_done_callback(report_backfill_failure)
         await worker.run()
 
 
@@ -115,6 +120,7 @@ async def enqueue_pending_source_searches(
         )
         if audit_id:
             statement = statement.where(CitationAuditFindingRecord.audit_id == audit_id)
+        statement = statement.order_by(CitationAuditFindingRecord.created_at.desc())
         finding_ids = list(await session.scalars(statement))
 
     enqueued = 0
@@ -158,6 +164,13 @@ async def enqueue_pending_source_searches(
 
 def source_search_job_id(finding_id: str) -> str:
     return f"citation-source-v{SOURCE_SEARCH_VERSION}-{finding_id}"
+
+
+def report_backfill_failure(task: asyncio.Task[int]) -> None:
+    try:
+        task.result()
+    except Exception:
+        logger.exception("Citation source-search backfill failed.")
 
 
 if __name__ == "__main__":
