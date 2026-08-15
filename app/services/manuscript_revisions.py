@@ -30,6 +30,7 @@ from app.database.models import (
     PaperRecord,
     ScholarlyWorkRecord,
 )
+from app.repositories.exports import detected_style_family, inferred_csl_style
 from app.schemas.documents import (
     BibliographyChange,
     EditOperation,
@@ -702,9 +703,23 @@ class ManuscriptRevisionService:
     ) -> CitationNode:
         style = await self._session.get(PaperCSLStyleRecord, paper_id)
         if style is None or not style.confirmed:
-            raise ValueError(
-                "Confirm the paper's CSL citation style before changing citations."
-            )
+            style_id = inferred_csl_style(paper)
+            if style_id is None:
+                raise ValueError(
+                    "The paper's CSL citation style could not be detected reliably."
+                )
+            if style is None:
+                style = PaperCSLStyleRecord(
+                    paper_id=paper_id,
+                    style_id=style_id,
+                    confirmed=True,
+                    detected_family=detected_style_family(paper),
+                )
+                self._session.add(style)
+            else:
+                style.style_id = style_id
+                style.confirmed = True
+                style.detected_family = detected_style_family(paper)
         projection = paper.model_copy(deep=True)
         if add_reference and all(
             reference.id != add_reference.id for reference in projection.references

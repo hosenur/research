@@ -599,12 +599,7 @@ async def get_citation_style(
     exports: PaperExports,
 ) -> CitationStyleStatus:
     document = await documents.get(paper_id)
-    detected = (
-        document.paper.citation_style_detection.family
-        if document.paper.citation_style_detection
-        else document.paper.citation_style
-    )
-    return await exports.style_status(paper_id, detected)
+    return await exports.ensure_detected_style(paper_id, document.paper)
 
 
 @router.put("/{paper_id}/citation-style", response_model=CitationStyleStatus)
@@ -633,12 +628,15 @@ async def confirm_citation_style(
 async def create_paper_export(
     paper_id: str,
     payload: PaperExportRequest,
+    documents: PaperDocuments,
     revisions: ManuscriptRevisions,
     exports: PaperExports,
     queue: PaperExportQueue,
     pipeline: PaperPipelineRepositoryDependency,
 ) -> PaperExport:
     try:
+        document = await documents.get(paper_id)
+        await exports.ensure_detected_style(paper_id, document.paper)
         await revisions.revision(paper_id, payload.revision)
         record = await exports.create(paper_id, payload.revision)
     except LookupError as exc:

@@ -111,12 +111,13 @@ async def enqueue_pending_source_searches(
     audit_id: str | None = None,
 ) -> int:
     session_factory = get_session_factory()
+    # A worker restart should recover durable queued work, but it must not turn
+    # a search-version bump into a full historical reprocessing job. New audit
+    # findings are scoped by audit_id and may still start from not_started.
+    eligible_statuses = ["not_started", "queued"] if audit_id else ["queued"]
     async with session_factory() as session:
         statement = select(CitationAuditFindingRecord.id).where(
-            (
-                CitationAuditFindingRecord.source_search_status.in_(["not_started", "queued"])
-                | (CitationAuditFindingRecord.source_search_version < SOURCE_SEARCH_VERSION)
-            )
+            CitationAuditFindingRecord.source_search_status.in_(eligible_statuses)
         )
         if audit_id:
             statement = statement.where(CitationAuditFindingRecord.audit_id == audit_id)
@@ -127,10 +128,7 @@ async def enqueue_pending_source_searches(
     for finding_id in finding_ids:
         async with session_factory() as session:
             finding = await session.get(CitationAuditFindingRecord, finding_id)
-            if finding and (
-                finding.source_search_status == "not_started"
-                or finding.source_search_version < SOURCE_SEARCH_VERSION
-            ):
+            if finding and finding.source_search_status in eligible_statuses:
                 await CitationAuditRepository(session).mark_source_search(finding_id, "queued")
         job_id = source_search_job_id(finding_id)
         job = await Job.fromId(queue, job_id)

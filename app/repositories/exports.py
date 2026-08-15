@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import PaperCSLStyleRecord, PaperExportRecord
 from app.schemas.documents import CitationStyleStatus, PaperExport
+from app.schemas.paper import Paper
 
 
 STYLE_CANDIDATES = {
@@ -34,6 +35,24 @@ class PaperExportRepository:
             confirmed=record.confirmed if record else False,
             detected_family=family,
             candidates=[{"id": style_id, "label": label} for style_id, label in candidates],
+        )
+
+    async def ensure_detected_style(
+        self,
+        paper_id: str,
+        paper: Paper,
+    ) -> CitationStyleStatus:
+        """Persist the manuscript's strongest detected CSL style when available."""
+        record = await self._session.get(PaperCSLStyleRecord, paper_id)
+        if record is not None and record.confirmed:
+            return await self.style_status(paper_id, detected_style_family(paper))
+        inferred = inferred_csl_style(paper)
+        if inferred is None:
+            return await self.style_status(paper_id, detected_style_family(paper))
+        return await self.confirm_style(
+            paper_id,
+            inferred,
+            detected_style_family(paper),
         )
 
     async def confirm_style(self, paper_id: str, style_id: str, detected_family: str | None) -> CitationStyleStatus:
@@ -140,3 +159,17 @@ def project_export(record: PaperExportRecord) -> PaperExport:
         latex_url=f"{base}/latex" if record.latex_object_key else None,
         pdf_url=f"{base}/pdf" if record.pdf_object_key else None,
     )
+
+
+def detected_style_family(paper: Paper) -> str | None:
+    if paper.citation_style_detection is not None:
+        return paper.citation_style_detection.family
+    return paper.citation_style
+
+
+def inferred_csl_style(paper: Paper) -> str | None:
+    detection = paper.citation_style_detection
+    if detection is not None and detection.csl_candidates:
+        return max(detection.csl_candidates, key=lambda candidate: candidate.score).id
+    candidates = STYLE_CANDIDATES.get(detected_style_family(paper) or "", [])
+    return candidates[0][0] if candidates else None

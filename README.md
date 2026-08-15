@@ -2,6 +2,8 @@
 
 A citation-aware workspace that turns a PDF into a structured manuscript, checks missing and existing citations against real scholarly sources, proposes reviewable edits, and exports a CSL-rendered PDF or editable LaTeX bundle.
 
+**[Watch the workflow screen recording](https://cap.so/s/8r53cznnbmve09y)**
+
 ## Run
 
 ```bash
