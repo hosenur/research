@@ -186,15 +186,25 @@ class OpenAlexRepository:
         cleaned = sanitize_filter(query)[:400]
         if not cleaned:
             return None, "search"
-        for method, filt in (
-            ("semantic", f"semantic.search:{cleaned}"),
-            ("keyword", f"title_and_abstract.search:{cleaned}"),
+        last_error: OpenAlexError | None = None
+        for method, params in (
+            ("search", {"search": cleaned, "per-page": str(per_page)}),
+            (
+                "keyword",
+                {
+                    "filter": f"title_and_abstract.search:{cleaned}",
+                    "per-page": str(per_page),
+                },
+            ),
         ):
             try:
-                return await self._get("/works", {"filter": filt, "per-page": str(per_page)}), method
+                return await self._get("/works", params), method
             except OpenAlexError as exc:
+                last_error = exc
                 if "rate-limited" in exc.detail or "unavailable" in exc.detail:
                     raise
+        if last_error is not None:
+            raise last_error
         return None, "search"
 
 

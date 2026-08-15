@@ -41,6 +41,7 @@ from app.repositories.semantic_scholar import (
 )
 from app.schemas.paper import Paper, Reference
 from app.services.missing_works import known_work_keys
+from app.services.openalex import reference_lookup_fields
 
 
 @dataclass(frozen=True)
@@ -156,7 +157,7 @@ class CitationSourceFulfillment:
                 .where(CitationClaimSearchResultRecord.search_id == cached.id)
                 .order_by(CitationClaimSearchResultRecord.rank)
             )
-            return [
+            candidates = [
                 SourceSearchResult(
                     work_id=row.work_id,
                     score=row.score,
@@ -164,6 +165,10 @@ class CitationSourceFulfillment:
                 )
                 for row in rows
             ]
+            # An empty search is not durable evidence that no source exists.
+            # Provider availability and bibliography enrichment can improve on
+            # a later attempt, especially when the same PDF is uploaded again.
+            return candidates or None
 
     async def _cache_candidates(
         self,
@@ -340,25 +345,36 @@ class CitationSourceSearcher:
             excluded,
             minimum_score=0.25,
         )
-        bibliography_candidates: list[SourceSearchResult] = []
+        bibliography_records: dict[str, ScholarlyWorkRecord] = {}
         excluded_ids = {reference.id for reference in excluded}
         for reference in paper.references:
-            if reference.id in excluded_ids or reference.openalex is None:
+            if reference.id in excluded_ids:
                 continue
-            work_id = await self._works.find_by_provider_id(
-                "openalex",
-                reference.openalex.id,
+            doi, arxiv_id, title, year, _author = reference_lookup_fields(reference)
+            record = await self._works.find_by_identity(
+                doi=doi,
+                arxiv_id=arxiv_id,
+                title=title,
+                year=year,
             )
-            if work_id:
-                bibliography_candidates.append(
-                    SourceSearchResult(
-                        work_id=work_id,
-                        score=0.92,
-                        reason=(
-                            "Exact unmatched bibliography work associated with this claim."
-                        ),
-                    )
+            if record is None and reference.openalex is not None:
+                provider_records = await self._works.by_provider_ids(
+                    "openalex", [reference.openalex.id]
                 )
+                record = provider_records[0] if provider_records else None
+            if record is not None:
+                bibliography_records[record.id] = record
+
+        # Bibliography rows are especially valuable for missing-citation
+        # recovery, but still rank them against the exact claim. A flat score
+        # used to let the first five references crowd out a later, exact match.
+        bibliography_candidates = self._rank_uncited(
+            paper,
+            query,
+            list(bibliography_records.values()),
+            excluded,
+            provider_rank={work_id: 0.45 for work_id in bibliography_records},
+        )
 
         provider_errors: list[str] = []
         provider_payloads: dict[str, dict[str, Any] | None] = {}

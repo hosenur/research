@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -143,6 +143,37 @@ class ScholarlyWorkRepository:
                 select(ScholarlyWorkRecord.id).where(
                     ScholarlyWorkRecord.provider_ids[provider].astext == provider_id
                 )
+            )
+
+    async def find_by_identity(
+        self,
+        *,
+        doi: str | None = None,
+        arxiv_id: str | None = None,
+        title: str | None = None,
+        year: int | None = None,
+    ) -> ScholarlyWorkRecord | None:
+        """Find cached evidence using only strong bibliography identities."""
+        normalized_doi = normalize_doi(doi)
+        normalized_arxiv = normalize_arxiv(arxiv_id)
+        normalized_title = normalize_title(title or "")
+        conditions = []
+        if normalized_doi:
+            conditions.append(ScholarlyWorkRecord.doi == normalized_doi)
+        if normalized_arxiv:
+            conditions.append(ScholarlyWorkRecord.arxiv_id == normalized_arxiv)
+        if normalized_title and year is not None:
+            conditions.append(
+                and_(
+                    ScholarlyWorkRecord.title_normalized == normalized_title,
+                    ScholarlyWorkRecord.year == year,
+                )
+            )
+        if not conditions:
+            return None
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(ScholarlyWorkRecord).where(or_(*conditions)).limit(1)
             )
 
     async def _upsert_work(
