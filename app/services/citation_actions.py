@@ -10,9 +10,11 @@ from app.config import SOURCE_SEARCH_VERSION
 from app.database.models import (
     CitationAuditFindingRecord,
     CitationAuditRecord,
+    CitationFeedbackRecord,
     CitationImprovementCandidateRecord,
     CitationSourceCandidateRecord,
     ClaimCitationReviewRecord,
+    ConfirmedCitationRecord,
     PaperRecord,
     ScholarlyWorkRecord,
 )
@@ -168,6 +170,109 @@ class CitationActionService:
             "findingId": finding_id,
             "status": status,
             "candidates": [self._candidate_payload(candidate, work) for candidate, work in rows],
+        }
+
+    async def opportunities(
+        self,
+        paper_id: str,
+        *,
+        section: str | None = None,
+        topic: str | None = None,
+        limit: int = 3,
+    ) -> dict[str, Any]:
+        """Resolve broad section/topic requests to exact audited claim anchors."""
+
+        bounded_limit = max(1, min(limit, 5))
+        async with self._session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(CitationAuditFindingRecord)
+                    .join(
+                        CitationAuditRecord,
+                        CitationAuditRecord.id == CitationAuditFindingRecord.audit_id,
+                    )
+                    .where(CitationAuditRecord.paper_id == paper_id)
+                    .order_by(
+                        CitationAuditFindingRecord.confidence.desc(),
+                        CitationAuditFindingRecord.revision,
+                    )
+                )
+            )
+            finding_ids = [row.id for row in rows]
+            confirmed = set(
+                await session.scalars(
+                    select(ConfirmedCitationRecord.finding_id).where(
+                        ConfirmedCitationRecord.paper_id == paper_id,
+                        ConfirmedCitationRecord.status == "accepted",
+                    )
+                )
+            )
+            feedback = (
+                list(
+                    await session.scalars(
+                        select(CitationFeedbackRecord)
+                        .where(CitationFeedbackRecord.finding_id.in_(finding_ids))
+                        .order_by(
+                            CitationFeedbackRecord.created_at,
+                            CitationFeedbackRecord.id,
+                        )
+                    )
+                )
+                if finding_ids
+                else []
+            )
+        latest_feedback = {item.finding_id: item.feedback for item in feedback}
+        ranked = rank_opportunities(
+            [
+                row
+                for row in rows
+                if row.id not in confirmed
+                and latest_feedback.get(row.id) != "false_positive"
+            ],
+            section=section,
+            topic=topic,
+        )[:bounded_limit]
+        results: list[dict[str, Any]] = []
+        for finding in ranked:
+            candidate_result = await self.candidates(
+                paper_id,
+                target="missing",
+                finding_id=finding.id,
+            )
+            candidates = candidate_result.get("candidates", [])
+            if not any(
+                item.get("supportStatus") == "verified"
+                and item.get("supportsClaim") is True
+                for item in candidates
+            ):
+                candidate_result = await self.search(
+                    paper_id,
+                    target="missing",
+                    finding_id=finding.id,
+                )
+                candidates = candidate_result.get("candidates", [])
+            results.append(
+                {
+                    "findingId": finding.id,
+                    "sectionId": finding.section_id,
+                    "section": finding.section_title,
+                    "paragraphId": finding.paragraph_id,
+                    "claim": finding.claim_text,
+                    "confidence": finding.confidence,
+                    "candidates": candidates,
+                }
+            )
+        return {
+            "status": "ready" if results else "no_findings",
+            "section": section,
+            "topic": topic,
+            "count": len(results),
+            "opportunities": results,
+            "instruction": (
+                "Use an exact findingId and verified candidateId to propose one citation at a time."
+                if results
+                else "No open audited claim matched this scope; do not invent a citation."
+            ),
         }
 
     async def search(
@@ -370,3 +475,37 @@ class CitationActionService:
             "supportEvidence": candidate.support_evidence,
             "decision": candidate.decision,
         }
+
+
+def rank_opportunities(
+    findings: list[CitationAuditFindingRecord],
+    *,
+    section: str | None,
+    topic: str | None,
+) -> list[CitationAuditFindingRecord]:
+    section_query = (section or "").casefold().strip()
+    topic_tokens = {
+        token
+        for token in (topic or "").casefold().replace("-", " ").split()
+        if len(token) > 2
+    }
+    scored: list[tuple[float, CitationAuditFindingRecord]] = []
+    for finding in findings:
+        section_text = f"{finding.section_id} {finding.section_title}".casefold()
+        if section_query and section_query not in section_text:
+            continue
+        haystack = f"{finding.section_title} {finding.claim_text}".casefold()
+        overlap = sum(token in haystack for token in topic_tokens)
+        if topic_tokens and overlap == 0:
+            continue
+        score = float(finding.confidence) + overlap
+        if section_query and section_query == finding.section_title.casefold():
+            score += 2
+        scored.append((score, finding))
+    return [
+        finding
+        for _score, finding in sorted(
+            scored,
+            key=lambda item: (-item[0], item[1].revision, item[1].id),
+        )
+    ]

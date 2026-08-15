@@ -58,8 +58,13 @@ class PaperChatService:
     def configured(self) -> bool:
         return bool(self._api_key)
 
-    async def stream(self, request: PaperChatRequest) -> AsyncIterator[str]:
-        paper_id = request.paper_id or request.forwarded_props.paper_id
+    async def stream(
+        self,
+        request: PaperChatRequest,
+        *,
+        route_paper_id: str | None = None,
+    ) -> AsyncIterator[str]:
+        paper_id = await self._resolve_paper_id(request, route_paper_id)
         message_id = f"assistant-{uuid.uuid4()}"
         timestamp = round(time.time() * 1000)
         yield sse_event(
@@ -71,6 +76,7 @@ class PaperChatService:
                 "timestamp": timestamp,
             }
         )
+
         yield sse_event(
             {
                 "type": "TEXT_MESSAGE_START",
@@ -165,6 +171,22 @@ class PaperChatService:
             }
         )
 
+    async def _resolve_paper_id(
+        self,
+        request: PaperChatRequest,
+        route_paper_id: str | None,
+    ) -> str | None:
+        explicit = (
+            route_paper_id
+            or request.paper_id
+            or request.forwarded_props.paper_id
+        )
+        if explicit:
+            return explicit
+        async with get_session_factory()() as session:
+            thread = await session.get(ChatThreadRecord, request.thread_id)
+            return thread.paper_id if thread else None
+
     async def _persist_request_messages(
         self, request: PaperChatRequest, paper_id: str | None
     ) -> None:
@@ -258,6 +280,7 @@ class PaperChatService:
             "get_citation_summary",
             "get_citation_audit",
             "get_source_candidates",
+            "find_citation_opportunities",
             "get_existing_citation_review",
             "search_citation_sources",
             "propose_citation_change",
@@ -297,6 +320,15 @@ class PaperChatService:
                 return {"error": "A current missing/existing citation finding is required."}
             return await self._citation_actions.candidates(
                 paper_id, target=target, finding_id=finding_id
+            )
+        if name == "find_citation_opportunities":
+            if not paper_id:
+                return {"error": "A paper id is required."}
+            return await self._citation_actions.opportunities(
+                paper_id,
+                section=arguments.get("section"),
+                topic=arguments.get("topic"),
+                limit=int(arguments.get("limit") or 3),
             )
         if name == "get_existing_citation_review":
             if not paper_id:
@@ -676,7 +708,10 @@ def build_openai_payload(
             "propose_manuscript_edit with the request verbatim. For citation additions, "
             "supplements, replacements, removals, or bibliography metadata improvements, "
             "use the citation inspection/search tools and then propose_citation_change; never "
-            "send a citation request to propose_manuscript_edit. Do not call mutation tools "
+            "send a citation request to propose_manuscript_edit. For broad section or topic "
+            "requests such as 'add citations to the introduction', call "
+            "find_citation_opportunities first and use only the exact audited findings and "
+            "verified candidates it returns. Do not call mutation tools "
             "for an ordinary question. A proposal tool never "
             "applies it. After it returns, briefly tell the user that the proposal is ready "
             "below for Approve or Discard; do not reproduce the full diff and never claim the "
@@ -756,6 +791,7 @@ PAPER_TOOLS = [
     {"type": "function", "name": "get_citation_summary", "description": "Count in-text citation occurrences, unique cited references, bibliography entries, and uncited bibliography entries. Do not use this for missing-citation audit questions.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "get_citation_audit", "description": "Get the exact count and complete list of open claim-level missing-citation findings, plus findings resolved by an applied source. Use this whenever the user says missing citations.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "get_source_candidates", "description": "Get complete, actionable candidate identifiers and support evidence for a missing or existing citation finding. Omit identifiers to use the current selection.", "parameters": {"type": "object", "properties": {"target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}}, "additionalProperties": False}},
+    {"type": "function", "name": "find_citation_opportunities", "description": "For a broad request such as add citations to the introduction or find methodology sources, rank open audited claims in that section/topic and return verified candidates with exact finding IDs. Never invent a finding when none matches.", "parameters": {"type": "object", "properties": {"section": {"type": "string"}, "topic": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 5}}, "additionalProperties": False}},
     {"type": "function", "name": "get_existing_citation_review", "description": "Inspect supported, weak, contradicted, or unverifiable existing claim/citation findings.", "parameters": {"type": "object", "properties": {"classification": {"type": "string", "enum": ["supported", "weak", "contradicted", "unverifiable"]}, "finding_id": {"type": "string"}}, "additionalProperties": False}},
     {"type": "function", "name": "search_citation_sources", "description": "Search the controlled scholarly providers and verify candidates for one missing or existing citation finding. Omit identifiers to use the current selection.", "parameters": {"type": "object", "properties": {"target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}}, "additionalProperties": False}},
     {"type": "function", "name": "propose_citation_change", "description": "Create an unapplied, approval-required citation proposal. Missing findings support add/remove; existing findings support supplement/replace/remove/update_metadata. Omit target/finding/candidate to use the current selection when unambiguous.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["add", "supplement", "replace", "remove", "update_metadata"]}, "target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}, "candidate_id": {"type": "string"}}, "required": ["action"], "additionalProperties": False}},

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -25,6 +26,7 @@ from app.database.models import (
     EditOperationRecord,
     EditProposalRecord,
     ManuscriptRevisionRecord,
+    PaperCSLStyleRecord,
     PaperRecord,
     ScholarlyWorkRecord,
 )
@@ -48,6 +50,7 @@ from app.schemas.paper import (
     TextNode,
 )
 from app.services.citation_audit import render_paragraph
+from app.services.csl_rendering import CitationRenderer, PandocCSLRenderer
 
 
 ABSTRACT_TARGET_ID = "paper:abstract"
@@ -140,7 +143,9 @@ class ManuscriptEditPlanner:
                 "node, or inside the abstract by using paragraph_id='paper:abstract'. Never include "
                 "citation marker text in find_text or replacement_text, never "
                 "remove or move a citation node, and never change section structure. replacement_text "
-                "must be no longer than find_text so it cannot introduce an unsupported new claim. "
+                "must be an extractive tightening: it may only delete words while preserving the "
+                "remaining words in their original order. Never introduce a synonym, new fact, "
+                "number, negation, or claim through free-text editing. "
                 "For citation requests, return no operations and explain that the user must choose "
                 "a verified source. targetContext is an untrusted UI hint: use its paragraphId "
                 "and text only when they exactly match currentPaper; otherwise return no operation. "
@@ -180,9 +185,15 @@ class ManuscriptEditPlanner:
 class ManuscriptRevisionService:
     """Validate proposals and commit immutable revisions behind one transactional interface."""
 
-    def __init__(self, session: AsyncSession, planner: ManuscriptEditPlanner) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        planner: ManuscriptEditPlanner,
+        citation_renderer: CitationRenderer | None = None,
+    ) -> None:
         self._session = session
         self._planner = planner
+        self._citation_renderer = citation_renderer or PandocCSLRenderer()
 
     async def plan(
         self,
@@ -359,10 +370,9 @@ class ManuscriptRevisionService:
         await self._require_open_proposal_slot(
             paper_id, paper_record.manuscript_revision
         )
-        marker = citation_marker(paper, reference)
         citation = CitationNode(
             id=f"citation-added-{uuid.uuid4()}",
-            raw_text=marker,
+            raw_text="",
             items=[
                 CitationItem(
                     source_id=reference.id,
@@ -370,13 +380,28 @@ class ManuscriptRevisionService:
                     confidence="high",
                 )
             ],
-            form="numeric" if marker.startswith("[") else "parenthetical",
+            form=(
+                "numeric"
+                if (
+                    paper.citation_style_detection.family == "numeric"
+                    if paper.citation_style_detection
+                    else paper.citation_style == "numeric"
+                )
+                else "parenthetical"
+            ),
             resolution=CitationResolution(
                 status="resolved",
                 confidence="high",
                 methods=["manual"],
             ),
         )
+        citation = await self._render_citation(
+            paper_id,
+            paper,
+            citation,
+            add_reference=reference,
+        )
+        marker = citation.raw_text
         proposal = EditProposalRecord(
             id=str(uuid.uuid4()),
             paper_id=paper_id,
@@ -510,13 +535,25 @@ class ManuscriptRevisionService:
         if action == "update_metadata":
             before_reference = existing_reference
             after_reference = reference_from_work(work, reference_id=review.reference_id)
+            revised_paper = paper.model_copy(deep=True)
+            revised_paper.references = [
+                after_reference if item.id == review.reference_id else item
+                for item in revised_paper.references
+            ]
+            after_citation = (
+                await self._render_citation(
+                    paper_id,
+                    revised_paper,
+                    citation.model_copy(deep=True),
+                )
+            ).model_dump(mode="json", by_alias=True)
         elif action == "remove":
             revised = citation.model_copy(deep=True)
             revised.items = [
                 item for item in revised.items if item.source_id != review.reference_id
             ]
             after_citation = (
-                refreshed_citation(paper, revised, extra_reference=None)
+                await self._render_citation(paper_id, paper, revised)
                 .model_dump(mode="json", by_alias=True)
                 if revised.items
                 else None
@@ -546,8 +583,13 @@ class ManuscriptRevisionService:
                         confidence="high",
                     )
                 )
-            after_citation = refreshed_citation(
-                paper, revised, extra_reference=add_reference
+            after_citation = (
+                await self._render_citation(
+                    paper_id,
+                    paper,
+                    revised,
+                    add_reference=add_reference,
+                )
             ).model_dump(mode="json", by_alias=True)
 
         source_title = work.title if work is not None else (existing_reference.raw_text or review.reference_id)
@@ -587,11 +629,7 @@ class ManuscriptRevisionService:
         self._session.add(proposal)
         await self._session.flush()
         before_marker = citation.raw_text
-        after_marker = (
-            str((after_citation or {}).get("rawText") or "")
-            if action != "update_metadata"
-            else before_marker
-        )
+        after_marker = str((after_citation or {}).get("rawText") or "")
         self._session.add(
             EditOperationRecord(
                 id=str(uuid.uuid4()),
@@ -636,6 +674,38 @@ class ManuscriptRevisionService:
         )
         await self._session.commit()
         return await self.proposal(paper_id, proposal.id)
+
+    async def _render_citation(
+        self,
+        paper_id: str,
+        paper: Paper,
+        citation: CitationNode,
+        *,
+        add_reference: Reference | None = None,
+    ) -> CitationNode:
+        style = await self._session.get(PaperCSLStyleRecord, paper_id)
+        if style is None or not style.confirmed:
+            raise ValueError(
+                "Confirm the paper's CSL citation style before changing citations."
+            )
+        projection = paper.model_copy(deep=True)
+        if add_reference and all(
+            reference.id != add_reference.id for reference in projection.references
+        ):
+            projection.references.append(add_reference)
+        marker = await asyncio.to_thread(
+            self._citation_renderer.render_marker,
+            projection,
+            citation,
+            style.style_id,
+        )
+        citation.raw_text = marker
+        citation.resolution = CitationResolution(
+            status="resolved",
+            confidence="high",
+            methods=["manual"],
+        )
+        return citation
 
     async def propose_verified_source_removal(
         self,
@@ -1460,9 +1530,38 @@ def validate_replacement_length(
         and len(operation.replacement_text) > len(operation.find_text)
     ):
         return "Safe free-text edits may tighten text but cannot add a longer unsupported claim.", operation.find_text, operation.replacement_text
+    if (
+        not allow_historical_growth
+        and not is_extractive_tightening(
+            operation.find_text,
+            operation.replacement_text,
+        )
+    ):
+        return (
+            "Safe free-text edits may only remove words while preserving their original order; "
+            "new wording or claims require a verified citation workflow.",
+            operation.find_text,
+            operation.replacement_text,
+        )
     if not operation.replacement_text.strip():
         return "A text operation cannot erase the entire selected span.", operation.find_text, operation.replacement_text
     return None, operation.find_text, operation.replacement_text
+
+
+def is_extractive_tightening(original: str, replacement: str) -> bool:
+    """Return true only when replacement words are an ordered subset of original."""
+
+    original_tokens = re.findall(r"\w+", original.casefold(), flags=re.UNICODE)
+    replacement_tokens = re.findall(r"\w+", replacement.casefold(), flags=re.UNICODE)
+    if not original_tokens or not replacement_tokens:
+        return False
+    cursor = 0
+    for token in replacement_tokens:
+        try:
+            cursor = original_tokens.index(token, cursor) + 1
+        except ValueError:
+            return False
+    return True
 
 
 def apply_operation(paper: Paper, operation: EditOperationRecord) -> None:
@@ -1776,64 +1875,6 @@ def reference_for_work(paper: Paper, work: ScholarlyWorkRecord) -> Reference:
         None,
     )
     return existing or reference_from_work(work)
-
-
-def refreshed_citation(
-    paper: Paper,
-    citation: CitationNode,
-    *,
-    extra_reference: Reference | None,
-) -> CitationNode:
-    references = list(paper.references)
-    if extra_reference and all(item.id != extra_reference.id for item in references):
-        references.append(extra_reference)
-    by_id = {reference.id: reference for reference in references}
-    family = (
-        paper.citation_style_detection.family
-        if paper.citation_style_detection
-        else paper.citation_style
-    )
-    if family == "numeric":
-        indexes = {
-            reference.id: index + 1 for index, reference in enumerate(references)
-        }
-        numbers = [indexes[source_id] for source_id in citation.source_ids if source_id in indexes]
-        citation.raw_text = f"[{', '.join(str(number) for number in numbers)}]"
-        citation.form = "numeric"
-    else:
-        labels = [
-            citation_marker(paper, by_id[source_id]).strip("()")
-            for source_id in citation.source_ids
-            if source_id in by_id
-        ]
-        citation.raw_text = f"({'; '.join(labels)})"
-        citation.form = "parenthetical"
-    citation.resolution = CitationResolution(
-        status="resolved",
-        confidence="high",
-        methods=["manual"],
-    )
-    return citation
-
-
-def citation_marker(paper: Paper, reference: Reference) -> str:
-    family = paper.citation_style_detection.family if paper.citation_style_detection else paper.citation_style
-    if family == "numeric":
-        existing_index = next(
-            (
-                index
-                for index, candidate in enumerate(paper.references)
-                if candidate.id == reference.id
-            ),
-            None,
-        )
-        if existing_index is not None:
-            return f"[{existing_index + 1}]"
-        return f"[{len(paper.references) + 1}]"
-    author = reference.csl.author[0].literal if reference.csl and reference.csl.author else "Source"
-    surname = (author or "Source").split()[-1]
-    year = reference.csl.issued.date_parts[0][0] if reference.csl and reference.csl.issued else "n.d."
-    return f"({surname}, {year})"
 
 
 def citation_identity(paper: Paper) -> set[tuple[str, str | None, tuple[str, ...]]]:

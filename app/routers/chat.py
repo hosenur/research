@@ -107,6 +107,7 @@ PaperAgent = Annotated[PaperChatService, Depends(get_paper_chat_service)]
 async def chat_with_paper(
     request: PaperChatRequest,
     agent: PaperAgent,
+    paper_id: str | None = Query(default=None),
 ) -> StreamingResponse:
     if not agent.configured:
         raise HTTPException(
@@ -114,7 +115,7 @@ async def chat_with_paper(
             detail="The paper agent is not configured. Set OPENAI_API_KEY on the API service.",
         )
     return StreamingResponse(
-        agent.stream(request),
+        agent.stream(request, route_paper_id=paper_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",

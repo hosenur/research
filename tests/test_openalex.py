@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -204,11 +205,7 @@ class OpenAlexRepositoryRetryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(work["id"], ATTENTION_WORK["id"])
         self.assertEqual(client.get.await_count, 2)
 
-    async def test_file_cache_skips_repeat_requests(self) -> None:
-        from pathlib import Path
-        from tempfile import TemporaryDirectory
-
-        from app.cache.jsonl import JsonlCache
+    async def test_durable_cache_port_skips_repeat_requests(self) -> None:
         from app.repositories.openalex import OpenAlexRepository
 
         ok = httpx.Response(
@@ -218,19 +215,28 @@ class OpenAlexRepositoryRetryTest(unittest.IsolatedAsyncioTestCase):
         )
         client = AsyncMock()
         client.get = AsyncMock(return_value=ok)
-
-        with TemporaryDirectory() as tmp:
-            cache_path = Path(tmp) / "openalex-cache.jsonl"
-            cache = JsonlCache(cache_path)
-            repository = OpenAlexRepository(client, cache=cache)
-            first = await repository.get_by_doi("10.1038/nature14539")
-            second = await repository.get_by_doi("10.1038/nature14539")
-            self.assertTrue(cache_path.exists())
-            self.assertIn("openalex:", cache_path.read_text())
+        values = {}
+        cache = SimpleNamespace(
+            get_cached=AsyncMock(
+                side_effect=lambda _provider, key: SimpleNamespace(
+                    found=key in values,
+                    value=values.get(key),
+                )
+            ),
+            store_response=AsyncMock(
+                side_effect=lambda _provider, key, response, **_kwargs: (
+                    values.__setitem__(key, response) or 1
+                )
+            ),
+        )
+        repository = OpenAlexRepository(client, cache=cache)
+        first = await repository.get_by_doi("10.1038/nature14539")
+        second = await repository.get_by_doi("10.1038/nature14539")
 
         self.assertEqual(first["id"], ATTENTION_WORK["id"])
         self.assertEqual(second["id"], ATTENTION_WORK["id"])
         self.assertEqual(client.get.await_count, 1)
+        cache.store_response.assert_awaited_once()
 
 
 if __name__ == "__main__":

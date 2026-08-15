@@ -49,7 +49,7 @@ export function AgentChat({
   className?: string
   edits?: ManuscriptEditFlow
   paper: unknown
-  paperId?: string
+  paperId: string
   revision?: number
   selectionContext?: PaperAgentSelectionContext | null
 }) {
@@ -57,7 +57,7 @@ export function AgentChat({
   if (edits) {
     return <AgentConversation chat={chat} className={className} edits={edits} />
   }
-  if (paperId && revision) {
+  if (revision) {
     return (
       <EditableAgentConversation
         chat={chat}

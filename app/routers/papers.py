@@ -74,6 +74,7 @@ from app.services.paper_pipeline import (
 )
 from app.services.papers import PaperService, normalize_tei
 from app.services.manuscript_revisions import ManuscriptRevisionService, RevisionConflictError
+from app.services.approved_edit_refresh import ApprovedEditRefresher, BullMQJobQueue
 from app.workers.source_search import enqueue_pending_source_searches
 
 router = APIRouter(prefix="/papers", tags=["papers"])
@@ -102,6 +103,7 @@ SourceSearchQueue = Annotated[Queue, Depends(get_source_search_queue)]
 PaperExports = Annotated[PaperExportRepository, Depends(get_paper_export_repository)]
 PaperExportQueue = Annotated[Queue, Depends(get_paper_export_queue)]
 ClaimCitationReviewQueue = Annotated[Queue, Depends(get_claim_citation_review_queue)]
+PaperIndexQueue = Annotated[Queue, Depends(get_paper_index_queue)]
 
 
 @router.post("", response_model=PaperLifecycle, status_code=status.HTTP_202_ACCEPTED)
@@ -491,98 +493,27 @@ async def approve_manuscript_edit(
     audits: CitationAudits,
     citation_queue: CitationAuditQueue,
     existing_queue: ClaimCitationReviewQueue,
+    index_queue: PaperIndexQueue,
     pipeline: PaperPipelineRepositoryDependency,
 ) -> EditProposal:
     try:
         approved = await revisions.approve(
             paper_id, proposal_id, payload.operation_ids
         )
-        if approved.approved_revision:
-            index_job_id = (
-                f"paper-index-{paper_id}-revision-{approved.approved_revision}"
-            )
-            if await Job.fromId(index_queue, index_job_id) is None:
-                await index_queue.add(
-                    "index-paper",
-                    {"paperId": paper_id},
-                    {
-                        "jobId": index_job_id,
-                        "attempts": 3,
-                        "backoff": {"type": "exponential", "delay": 2_000},
-                        "removeOnComplete": False,
-                        "removeOnFail": False,
-                    },
-                )
-            await pipeline.queued(
-                paper_id,
-                "authoritative-index",
-                progress={"manuscriptRevision": approved.approved_revision},
-            )
-        citation_operations = [
-            operation
-            for operation in approved.operations
-            if operation.approved
-            and operation.operation_type
-            in {"insert_citation", "remove_citation", "citation_change"}
-        ]
-        if citation_operations and approved.approved_revision:
-            document = await documents.get(paper_id)
-            paragraph_ids = {
-                node_id
-                for operation in citation_operations
-                for node_id in operation.node_ids
-            }
-            section_ids = [
-                section.id
-                for section in document.paper.sections
-                if any(
-                    paragraph.id in paragraph_ids for paragraph in section.paragraphs
-                )
-            ]
-            audit = await audits.create_or_get(paper_id, claim_audit_model())
-            jobs = [
-                (
-                    citation_queue,
-                    "audit-missing-citations",
-                    {
-                        "paperId": paper_id,
-                        "auditId": audit.id,
-                        "sectionIds": section_ids,
-                    },
-                    f"citation-audit-{paper_id}-revision-{approved.approved_revision}",
-                    "missing-citation-review",
-                ),
-                (
-                    existing_queue,
-                    "review-existing-citations",
-                    {"paperId": paper_id, "sectionIds": section_ids},
-                    f"claim-citation-review-{paper_id}-revision-{approved.approved_revision}",
-                    "existing-citation-review",
-                ),
-            ]
-            for queue, name, data, job_id, stage in jobs:
-                if await Job.fromId(queue, job_id) is None:
-                    await queue.add(
-                        name,
-                        data,
-                        {
-                            "jobId": job_id,
-                            "attempts": 4,
-                            "backoff": {"type": "exponential", "delay": 2_000},
-                            "removeOnComplete": False,
-                            "removeOnFail": False,
-                        },
-                    )
-                await pipeline.queued(
-                    paper_id,
-                    stage,
-                    progress={
-                        "sectionIds": section_ids,
-                        "scope": "approved-edit",
-                        "manuscriptRevision": approved.approved_revision,
-                    },
-                )
-        return approved
+        refresh_warnings = await ApprovedEditRefresher(
+            documents=documents,
+            audits=audits,
+            pipeline=pipeline,
+            index_jobs=BullMQJobQueue(index_queue),
+            missing_review_jobs=BullMQJobQueue(citation_queue),
+            existing_review_jobs=BullMQJobQueue(existing_queue),
+            audit_model=claim_audit_model(),
+        ).schedule(paper_id, approved)
+        if not refresh_warnings:
+            return approved
+        return approved.model_copy(
+            update={"warnings": [*approved.warnings, *refresh_warnings]}
+        )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RevisionConflictError as exc:

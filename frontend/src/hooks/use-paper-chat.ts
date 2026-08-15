@@ -46,12 +46,12 @@ async function fetchChatHistory(url: string): Promise<ChatHistoryResponse> {
 
 export function usePaperChat(
   paper: unknown,
-  paperId?: string,
+  paperId: string,
   selectionContext?: PaperAgentSelectionContext | null,
 ) {
   const [threadId] = useState(
     () => {
-      const key = `paper-chat-thread:${paperId ?? 'unscoped'}`
+      const key = `paper-chat-thread:${paperId}`
       const existing = typeof window !== 'undefined' ? window.localStorage.getItem(key) : null
       const next = existing ?? `paper-${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`
       if (typeof window !== 'undefined') window.localStorage.setItem(key, next)
@@ -64,15 +64,19 @@ export function usePaperChat(
   )
   const connection = useMemo(
     () =>
-      fetchServerSentEvents('/api/chat', {
-        body: { paper, paperId, selectionContext },
+      fetchServerSentEvents(`/api/chat?paper_id=${encodeURIComponent(paperId)}`, {
         fetchClient: paperAgentFetch,
       }),
+    [paperId],
+  )
+  const forwardedProps = useMemo(
+    () => ({ paper, paperId, selectionContext }),
     [paper, paperId, selectionContext],
   )
 
   const chat = useChat({
     connection,
+    forwardedProps,
     initialMessages: [INITIAL_MESSAGE],
     threadId,
   })

@@ -113,7 +113,8 @@ class SamplePaperSmokeTest(unittest.TestCase):
             for fragment in node.unresolved_fragments
         ]
         self.assertTrue(leftover)
-        self.assertTrue(all("Mnih" in fragment for fragment in leftover))
+        self.assertIn("Mnih and Hinton, 2009", leftover)
+        self.assertIn("Clark and Gardner, 2018", leftover)
 
         by_id = {reference.id: reference for reference in paper.references}
         self.assertEqual(by_id["b9"].status, "parsed")

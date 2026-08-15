@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import re
 import shutil
 import subprocess
 import tempfile
@@ -10,17 +8,8 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
-from citeproc import (
-    Citation,
-    CitationItem as ProcessorCitationItem,
-    CitationStylesBibliography,
-    CitationStylesStyle,
-    formatter,
-)
-from citeproc.source.json import CiteProcJSON
-from citeproc_styles import get_style_filepath
-
-from app.schemas.paper import CitationNode, Paper, TextNode
+from app.schemas.paper import Paper
+from app.services.csl_rendering import CitationRenderer, PandocCSLRenderer
 
 
 @dataclass(frozen=True)
@@ -32,148 +21,29 @@ class GeneratedPaperExport:
 
 
 class CSLPaperExporter:
-    """Render canonical CSL-JSON through citeproc, then build a semantic LaTeX project."""
+    """Render canonical CSL-JSON through Pandoc citeproc and compile its LaTeX."""
+
+    def __init__(self, renderer: CitationRenderer | None = None) -> None:
+        self._renderer = renderer or PandocCSLRenderer()
 
     def generate(self, paper: Paper, style_id: str) -> GeneratedPaperExport:
-        style_path = Path(get_style_filepath(style_id))
-        if not style_path.is_file():
-            raise ValueError(f"The CSL style '{style_id}' is unavailable.")
-        csl_items = [
-            reference.csl.model_dump(mode="json", by_alias=True, exclude_none=True)
-            for reference in paper.references
-            if reference.csl is not None
-        ]
-        warnings: list[str] = []
+        rendered = self._renderer.render_document(paper, style_id)
         missing_csl = [reference.id for reference in paper.references if reference.csl is None]
+        warnings = list(rendered.warnings)
         if missing_csl:
             warnings.append(
-                f"{len(missing_csl)} references lacked CSL-JSON and were omitted from styled rendering: {', '.join(missing_csl[:12])}."
+                f"{len(missing_csl)} references lacked CSL-JSON and were preserved only "
+                f"where their raw marker appeared: {', '.join(missing_csl[:12])}."
             )
-        source = CiteProcJSON(csl_items)
-        style = CitationStylesStyle(str(style_path), validate=False)
-        bibliography = CitationStylesBibliography(style, source, formatter.plain)
-        known_ids = {str(item["id"]) for item in csl_items}
-        citations: dict[int, Citation] = {}
-        for node in citation_nodes(paper):
-            ids = [item.source_id for item in node.items if item.source_id in known_ids]
-            if not ids:
-                continue
-            citation = Citation([ProcessorCitationItem(source_id) for source_id in ids])
-            citations[id(node)] = citation
-            bibliography.register(citation)
-
-        def warn(item: object) -> None:
-            warnings.append(f"CSL could not resolve a citation item: {item}.")
-
-        rendered: dict[int, str] = {}
-        for node in citation_nodes(paper):
-            citation = citations.get(id(node))
-            if citation is None:
-                rendered[id(node)] = node.raw_text
-                continue
-            value = bibliography.cite(citation, warn)
-            rendered[id(node)] = flatten_citeproc(value) or node.raw_text
-        rendered_bibliography = [flatten_citeproc(item) for item in bibliography.bibliography()]
-        latex = render_latex(paper, rendered, rendered_bibliography, style_id)
-        pdf, compiler_output = compile_latex(latex)
+        pdf, compiler_output = compile_latex(rendered.latex)
         bundle = build_bundle(
-            latex,
-            csl_items,
-            style_path.read_bytes(),
+            rendered.latex,
+            rendered.references_json,
+            rendered.style,
             style_id,
             warnings,
         )
         return GeneratedPaperExport(bundle, pdf, list(dict.fromkeys(warnings)), compiler_output)
-
-
-def citation_nodes(paper: Paper) -> list[CitationNode]:
-    return [
-        node
-        for section in paper.sections
-        for paragraph in section.paragraphs
-        for node in paragraph.nodes
-        if isinstance(node, CitationNode)
-    ]
-
-
-def flatten_citeproc(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (list, tuple)):
-        return "".join(flatten_citeproc(item) for item in value)
-    return str(value)
-
-
-def render_latex(
-    paper: Paper,
-    citations: dict[int, str],
-    bibliography: list[str],
-    style_id: str,
-) -> str:
-    authors = ", ".join(
-        name.literal or " ".join(part for part in [name.given, name.family] if part)
-        for name in paper.authors
-    )
-    body: list[str] = []
-    if paper.abstract:
-        body.extend(["\\begin{abstract}", latex_escape(paper.abstract), "\\end{abstract}"])
-    for section in paper.sections:
-        body.append(f"\\section{{{latex_escape(section.title)}}}")
-        for paragraph in section.paragraphs:
-            parts = [
-                latex_escape(node.text)
-                if isinstance(node, TextNode)
-                else latex_escape(citations.get(id(node), node.raw_text))
-                for node in paragraph.nodes
-            ]
-            body.append("".join(parts) + "\n")
-    body.extend(["\\section*{References}", "\\begin{enumerate}"])
-    body.extend(f"\\item {latex_escape(item)}" for item in bibliography if item)
-    body.append("\\end{enumerate}")
-    return "\n".join(
-        [
-            "\\documentclass[11pt]{article}",
-            "\\usepackage[T1]{fontenc}",
-            "\\usepackage[utf8]{inputenc}",
-            "\\usepackage[margin=1in]{geometry}",
-            "\\usepackage[hidelinks]{hyperref}",
-            f"% Citations and bibliography rendered with CSL style: {style_id}",
-            f"\\title{{{latex_escape(paper.title)}}}",
-            f"\\author{{{latex_escape(authors)}}}",
-            "\\date{}",
-            "\\begin{document}",
-            "\\maketitle",
-            *body,
-            "\\end{document}",
-            "",
-        ]
-    )
-
-
-def latex_escape(value: str) -> str:
-    substitutions = {
-        "\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$",
-        "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}",
-        "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
-    }
-    escaped = re.sub(
-        r"[\\&%$#_{}~^]",
-        lambda match: substitutions[match.group(0)],
-        value,
-    )
-    unicode_substitutions = {
-        "×": r"$\times$",
-        "ŝ": r"\^{s}",
-        "β": r"$\beta$",
-        "τ": r"$\tau$",
-        "–": "--",
-        "•": r"\textbullet{}",
-        "∅": r"$\emptyset$",
-        "∈": r"$\in$",
-        "≤": r"$\leq$",
-        "≥": r"$\geq$",
-    }
-    return "".join(unicode_substitutions.get(character, character) for character in escaped)
 
 
 def compile_latex(latex: str) -> tuple[bytes, str]:
@@ -206,7 +76,7 @@ def compile_latex(latex: str) -> tuple[bytes, str]:
 
 def build_bundle(
     latex: str,
-    references: list[dict],
+    references_json: bytes,
     style: bytes,
     style_id: str,
     warnings: list[str],
@@ -214,7 +84,7 @@ def build_bundle(
     output = BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("main.tex", latex)
-        archive.writestr("references.json", json.dumps(references, ensure_ascii=False, indent=2))
+        archive.writestr("references.json", references_json)
         archive.writestr(f"styles/{style_id}.csl", style)
         archive.writestr(
             "README.txt",
