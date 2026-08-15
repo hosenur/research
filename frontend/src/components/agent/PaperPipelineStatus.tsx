@@ -30,7 +30,7 @@ export function PaperPipelineStatus({ paperId }: PaperPipelineStatusProps) {
 
   return (
     <Card className="shrink-0 bg-overlay shadow-overlay">
-      <CardHeader title="Processing status" description="Background work continues while you review" />
+      <CardHeader title="Processing status" description="Live progress for this paper" />
       <CardContent className="border-t px-4 py-3">
         {!data && (isLoading || error) ? (
           <p className="flex items-center gap-2 text-xs text-muted-fg" role="status">

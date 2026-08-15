@@ -51,7 +51,6 @@ function PersistedPaperPage() {
         lifecycle={lifecycle.data}
         onRefresh={() => void lifecycle.mutate()}
         onReset={reset}
-        pdfUrl={pdfUrl}
       />
     )
   }

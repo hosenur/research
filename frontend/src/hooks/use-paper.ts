@@ -184,22 +184,6 @@ export function usePaperLifecycle(paperId: string) {
   })
 }
 
-export function useObjectUrl(file: File | null) {
-  const [url, setUrl] = useState('')
-
-  useEffect(() => {
-    if (!file) {
-      setUrl('')
-      return
-    }
-    const nextUrl = URL.createObjectURL(file)
-    setUrl(nextUrl)
-    return () => URL.revokeObjectURL(nextUrl)
-  }, [file])
-
-  return url
-}
-
 async function postJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { method: 'POST' })
   if (!response.ok) throw new Error(`The API returned HTTP ${response.status}.`)

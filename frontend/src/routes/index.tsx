@@ -1,16 +1,16 @@
 import { useCallback } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import {
-  ArrowSquareOutIcon as ExternalLink,
   CloudArrowUpIcon as UploadCloud,
   FileTextIcon as FileText,
   XIcon as X,
 } from '@phosphor-icons/react'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { DropZone } from '@/components/ui/drop-zone'
 import { FileTrigger } from '@/components/ui/file-trigger'
 import { PaperProcessingSteps } from '@/components/ui/PaperProcessingSteps'
-import { useObjectUrl, usePaperUploadFlow } from '@/hooks/use-paper'
+import { usePaperUploadFlow } from '@/hooks/use-paper'
 import type { PaperLifecycleJson } from '@/lib/paper'
 
 function PaperPage() {
@@ -25,61 +25,33 @@ function PaperPage() {
     [navigate],
   )
   const upload = usePaperUploadFlow(onUploaded)
-  const previewUrl = useObjectUrl(
-    upload.state.kind === 'uploading' ? upload.state.file : null,
-  )
 
   if (upload.state.kind === 'uploading') {
     return (
-      <section
+      <main
         aria-label="Uploading research paper"
-        className="grid min-h-dvh gap-4 bg-bg p-3 lg:grid-cols-[minmax(0,1fr)_24rem] lg:p-4"
+        className="grid min-h-dvh place-items-center bg-bg p-4 sm:p-8"
       >
-        <div className="relative min-h-[60dvh] overflow-hidden rounded-xl border border-border bg-muted shadow-overlay lg:min-h-0">
-          <div className="absolute right-2 top-2 z-10 flex gap-1.5 rounded-lg border border-border bg-overlay/95 p-1 shadow-sm backdrop-blur-sm">
-            <Button
-              aria-label="Open PDF in a new tab"
-              intent="plain"
-              isDisabled={!previewUrl}
-              onPress={() => window.open(previewUrl, '_blank', 'noopener,noreferrer')}
-              size="sq-xs"
-            >
-              <ExternalLink />
-            </Button>
-            <Button intent="outline" onPress={upload.reset} size="xs">
-              <X />
-              Cancel
-            </Button>
-          </div>
-          {previewUrl ? (
-            <object
-              aria-label={`Preview of ${upload.state.file.name}`}
-              className="size-full"
-              data={previewUrl}
-              type="application/pdf"
-            >
-              <div className="grid size-full place-items-center p-8 text-center text-sm text-muted-fg">
-                <Button onPress={() => window.open(previewUrl, '_blank')} size="sm">
-                  <ExternalLink />
-                  Open PDF
-                </Button>
-              </div>
-            </object>
-          ) : null}
-        </div>
-        <aside className="self-center rounded-xl border border-border bg-overlay p-5 shadow-overlay lg:self-stretch">
-          <span className="grid size-11 place-items-center rounded-xl bg-primary-subtle text-primary-subtle-fg">
-            <FileText aria-hidden="true" className="size-5" />
-          </span>
-          <h1 className="mt-4 truncate font-display text-xl font-semibold text-fg">
-            {upload.state.file.name}
-          </h1>
-          <p className="mt-2 text-sm/6 text-muted-fg">
-            You can read the PDF now. We will open a permanent workspace as soon as the upload finishes.
-          </p>
-          <PaperProcessingSteps uploadProgress={upload.state.uploadProgress} />
-        </aside>
-      </section>
+        <Card className="w-full max-w-xl bg-overlay shadow-overlay">
+          <CardHeader
+            title={upload.state.file.name}
+            description="Uploading the original PDF securely. Processing begins automatically."
+          >
+            <span className="grid size-10 place-items-center rounded-lg bg-primary-subtle text-primary-subtle-fg">
+              <FileText aria-hidden="true" className="size-5" />
+            </span>
+          </CardHeader>
+          <CardContent className="border-t px-5 py-5">
+            <PaperProcessingSteps uploadProgress={upload.state.uploadProgress} />
+            <div className="mt-5 flex justify-end border-t border-border pt-4">
+              <Button intent="outline" onPress={upload.reset} size="sm">
+                <X />
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </main>
     )
   }
 
