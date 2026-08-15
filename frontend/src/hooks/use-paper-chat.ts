@@ -16,6 +16,18 @@ const INITIAL_MESSAGE: UIMessage = {
   ],
 }
 
+const PROVISIONAL_INITIAL_MESSAGE: UIMessage = {
+  id: 'paper-agent-index-ready',
+  role: 'assistant',
+  parts: [
+    {
+      type: 'text',
+      content:
+        'Chat is ready from the fast vector index. Ask broad questions about the paper now; exact citations, review, and editing will unlock as background processing finishes.',
+    },
+  ],
+}
+
 async function paperAgentFetch(input: RequestInfo | URL, init?: RequestInit) {
   const response = await fetch(input, init)
   if (response.ok) return response
@@ -77,7 +89,7 @@ export function usePaperChat(
   const chat = useChat({
     connection,
     forwardedProps,
-    initialMessages: [INITIAL_MESSAGE],
+    initialMessages: [paper == null ? PROVISIONAL_INITIAL_MESSAGE : INITIAL_MESSAGE],
     threadId,
   })
 

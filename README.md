@@ -44,8 +44,10 @@ sequenceDiagram
     A->>O: Save immutable source
     A->>D: Create paper UUID/status
     A-->>U: 202 immediately
-    A->>Q: Quick-read + authoritative parse
-    Q->>W: Idempotent job
+    A->>Q: Quick extraction/index first + authoritative parse
+    Q->>W: Idempotent concurrent jobs
+    W->>D: Chunk text + save provisional vectors
+    A-->>U: Enable grounded chat in the workspace
     W->>G: Preflight, OCR if needed, produce TEI
     G-->>W: TEI text, layout, bibliography, anchors
     W->>O: Save immutable TEI artifact
@@ -107,12 +109,12 @@ Core invariants and failure behavior:
 - Approval is transactional and creates the next immutable revision. Reindex/review runs after commit; queue failure becomes a visible warning and retryable stage, never a false approval failure.
 - Search is local-cache first, then both providers with throttling, bounded retries and negative caching. No key/abstract/verifier means `unverifiable`, never actionable.
 - OpenAlex and Semantic Scholar matches stay as provider-scoped evidence. They reconcile only on DOI, arXiv ID, or exact title/year/author identity; conflicts remain `ambiguous`, with abstract and identifier provenance preserved per provider.
-- Quick Read is clearly provisional. Unparseable citations, provider failures, ambiguous matches, empty searches, stale anchors and revision conflicts are returned as explicit states.
+- Provisional chat uses the fast vector index and receives live pipeline status on every request. It answers supported broad questions normally and names the exact unfinished stage only when structure, citations, review, or editing is not ready.
 - Export reconstructs semantic AST content. Figures, tables, display equations, notes, captions, cross-references and page typography are not first-class nodes and may be omitted or flattened; every export warns the user to compare it with the source PDF.
 
 ## Decisions for fast interaction and reuse
 
-- The local PDF appears immediately; parsing and reviews never block entry to the workspace.
+- Upload enters the Agent-first workspace immediately. Chat unlocks after quick extraction, chunking, and vectorization; authoritative parsing, reference resolution, reviews, and re-indexing continue in the same workspace.
 - Independent jobs run concurrently with stable IDs, bounded retries, stage-level status, and manual recovery.
 - A paper's first successful parse persists its source PDF, raw TEI, Paper AST, quick/authoritative indexes, findings, and immutable revision history. Reopening its UUID reuses that state without parsing again.
 - Provider responses are cached by exact request in PostgreSQL. Normalized scholarly works are deduplicated by provider IDs/DOI/title and searched locally before external calls, so sources discovered for one paper can support future papers.

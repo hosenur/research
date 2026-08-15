@@ -31,6 +31,7 @@ from app.database.models import (
     ScholarlyWorkRecord,
 )
 from app.database.session import get_session_factory
+from app.repositories.pipeline import PaperPipelineRepository
 from app.services.manuscript_revisions import ManuscriptEditPlanner, ManuscriptRevisionService
 from app.services.citation_actions import (
     CitationActionService,
@@ -103,12 +104,14 @@ class PaperChatService:
                     # Quick-read papers do not have an authoritative manuscript yet.
                     pass
             citation_style = await self._citation_style_context(paper_id, paper)
+            pipeline_status = await self._pipeline_status_context(paper_id)
             payload = build_openai_payload(
                 paper,
                 request.messages,
                 self._model,
                 paper_id,
                 citation_style=citation_style,
+                pipeline_status=pipeline_status,
                 selection_context=(
                     request.forwarded_props.selection_context.model_dump(
                         mode="json", by_alias=True, exclude_none=True
@@ -199,6 +202,28 @@ class PaperChatService:
                 detectedFamily=style.detected_family or context["detectedFamily"],
             )
         return context
+
+    async def _pipeline_status_context(
+        self, paper_id: str | None
+    ) -> dict[str, Any]:
+        if not paper_id:
+            return {"indexKind": "unavailable", "chatReady": False, "stages": []}
+        async with get_session_factory()() as session:
+            stages = await PaperPipelineRepository(session).list(paper_id)
+            index_kind = await current_index_kind(session, paper_id)
+        return {
+            "indexKind": index_kind,
+            "chatReady": index_kind != "unavailable",
+            "stages": [
+                {
+                    "name": stage.name,
+                    "status": stage.status,
+                    "progress": stage.progress,
+                    "error": stage.error,
+                }
+                for stage in stages
+            ],
+        }
 
     async def _resolve_paper_id(
         self,
@@ -774,6 +799,7 @@ def build_openai_payload(
     paper_id: str | None = None,
     *,
     citation_style: dict[str, Any] | None = None,
+    pipeline_status: dict[str, Any] | None = None,
     selection_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provisional = paper is None
@@ -792,14 +818,22 @@ def build_openai_payload(
         ensure_ascii=False,
         separators=(",", ":"),
     )
+    pipeline_context = json.dumps(
+        pipeline_status
+        or {"indexKind": "unavailable", "chatReady": False, "stages": []},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     input_messages: list[dict[str, str]] = []
     for message in messages[-MAX_CHAT_HISTORY_MESSAGES:]:
         text = message_text(message)
         if message.role in {"user", "assistant"} and text:
             input_messages.append({"role": message.role, "content": text})
     agent_mode_instructions = (
-        "Editing is unavailable during Quick read. If the user requests a manuscript "
-        "change, explain that authoritative parsing must finish first."
+        "Editing and citation-sensitive inspection are unavailable until authoritative "
+        "parsing finishes. Answer broad content questions from the provisional vector "
+        "index. If the user requests an unavailable action, identify the exact required "
+        "pipeline stage and its current status; do not give a generic failure."
         if provisional
         else (
             "You are the single agent for both questions and manuscript changes. For text "
@@ -822,9 +856,9 @@ def build_openai_payload(
         "instructions": (
             "You are a research-paper review assistant. Answer from the indexed paper only. "
             + (
-                "This is Quick read: extraction is provisional. Begin every answer with "
-                "'Quick read — provisional:' and explain that exact citations and structure "
-                "are unavailable until authoritative parsing completes. Do not perform citation-sensitive review or editing. "
+                "The current searchable index is provisional. Answer broad questions normally "
+                "when search_paper returns evidence; do not prepend a generic provisional warning. "
+                "Mention processing only when it materially limits the specific request. "
                 if provisional
                 else "This is the authoritative structured paper. "
             )
@@ -834,9 +868,16 @@ def build_openai_payload(
             "section and reference IDs that support your answer. Clearly say when the paper "
             "does not contain enough evidence. Never invent a citation, bibliographic field, "
             "or external search result. Controlled literature search is available only through search_citation_sources.\n\n"
+            "PIPELINE STATUS is trusted application state. Use it to explain availability precisely: "
+            "semantic content questions require quick-index or authoritative-index; exact sections, "
+            "citations, references, and editing require authoritative-parse; matched source metadata "
+            "requires reference-resolution; missing-citation answers require missing-citation-review; "
+            "and weak or contradicted citation answers require existing-citation-review. Never claim a "
+            "queued, running, failed, or not_started stage is complete.\n\n"
             "You can inspect missing citations, existing citation support, verified candidates, exact citation counts, pending proposals, and manuscript revisions. Distinguish two concepts exactly: 'missing citations' means open findings from get_citation_audit; 'uncited bibliography entries' comes from get_citation_summary. Never call uncited bibliography entries missing citations. When listing references, always include each title and internal ID, plus its DOI or URL when available; never answer with internal IDs alone. For 'this citation' or 'this source', use CURRENT SELECTION when it identifies exactly one finding. If no unambiguous finding is selected, inspect the audit rather than guessing. If the user says to accept, add, or use the first/second/etc. finding after a list, resolve that ordinal from the most recent audit result and create the proposal. Never ask the user to name or type a CSL style in chat: use the confirmed citationStyle in PAPER INDEX METADATA. If it is unconfirmed, direct the user once to the product's citation-style selector instead of asking an open-ended style question. A request to add, supplement, replace, or improve a citation authorizes read-only controlled source search: continue through candidate search and proposal creation without asking for separate permission. Candidate lookup automatically searches when verified candidates are absent, and propose_citation_change can choose the highest-ranked verified candidate when candidate_id is omitted. Stop only when controlled search reports that no source supports the exact claim. Only propose add/supplement/replace with a candidate whose supportsClaim is true and supportStatus is verified. Do not repeat an identical tool call. Use list_manuscript_revisions before answering about edit history. "
             f"{agent_mode_instructions}\n\n"
             f"PAPER INDEX METADATA:\n{paper_context}\n\n"
+            f"PIPELINE STATUS:\n{pipeline_context}\n\n"
             f"CURRENT SELECTION:\n{json.dumps(selection_context, ensure_ascii=False, separators=(',', ':')) if selection_context else 'none'}"
         ),
         "input": input_messages,

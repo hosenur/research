@@ -19,6 +19,7 @@ import { AgentChat } from '@/components/agent/AgentChat'
 import { ExportControl } from '@/components/agent/ExportPanel'
 import { ManuscriptNavigationToolbar } from '@/components/agent/ManuscriptNavigationToolbar'
 import { MatchedReferencesPanel } from '@/components/agent/MatchedReferencesPanel'
+import { PaperPendingWorkspace } from '@/components/agent/PaperPendingWorkspace'
 import {
   PaperManuscript,
   type ManuscriptFocus,
@@ -46,7 +47,7 @@ import {
   type PaperAgentSelectionContext,
   type ManuscriptSelection,
 } from '@/lib/manuscript-focus'
-import type { PaperJson } from '@/lib/paper'
+import type { PaperJson, PaperLifecycleJson } from '@/lib/paper'
 
 type WorkspaceTab = 'review' | 'agent' | 'references'
 
@@ -77,6 +78,42 @@ function referenceUrl(reference: PaperJson['references'][number]) {
 }
 
 interface PaperWorkspaceProps {
+  lifecycle: PaperLifecycleJson
+  onRefresh: () => void
+  onReset: () => void
+  pdfUrl: string
+}
+
+export function PaperWorkspace({
+  lifecycle,
+  onRefresh,
+  onReset,
+  pdfUrl,
+}: PaperWorkspaceProps) {
+  if (lifecycle.status !== 'ready' || !lifecycle.paper) {
+    return (
+      <PaperPendingWorkspace
+        lifecycle={lifecycle}
+        onRefresh={onRefresh}
+        onReset={onReset}
+      />
+    )
+  }
+
+  return (
+    <AuthoritativePaperWorkspace
+      documentRevision={lifecycle.revision}
+      filename={lifecycle.filename}
+      onReset={onReset}
+      paper={lifecycle.paper}
+      paperId={lifecycle.id}
+      paperRevision={lifecycle.manuscriptRevision}
+      pdfUrl={pdfUrl}
+    />
+  )
+}
+
+interface AuthoritativePaperWorkspaceProps {
   documentRevision: number
   filename: string
   onReset: () => void
@@ -86,7 +123,7 @@ interface PaperWorkspaceProps {
   pdfUrl: string
 }
 
-export function PaperWorkspace({
+function AuthoritativePaperWorkspace({
   documentRevision,
   filename,
   onReset,
@@ -94,7 +131,7 @@ export function PaperWorkspace({
   paperId,
   paperRevision,
   pdfUrl,
-}: PaperWorkspaceProps) {
+}: AuthoritativePaperWorkspaceProps) {
   const [showPdf, setShowPdf] = useState(false)
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>('agent')
   const [activeReviewCategory, setActiveReviewCategory] =

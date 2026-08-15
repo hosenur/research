@@ -1,6 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { WarningIcon as Warning } from '@phosphor-icons/react'
-import { PaperPendingWorkspace } from '@/components/agent/PaperPendingWorkspace'
 import { PaperWorkspace } from '@/components/agent/PaperWorkspace'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -45,24 +44,11 @@ function PersistedPaperPage() {
     )
   }
 
-  if (lifecycle.data.status !== 'ready' || !lifecycle.data.paper) {
-    return (
-      <PaperPendingWorkspace
-        lifecycle={lifecycle.data}
-        onRefresh={() => void lifecycle.mutate()}
-        onReset={reset}
-      />
-    )
-  }
-
   return (
     <PaperWorkspace
-      documentRevision={lifecycle.data.revision}
-      filename={lifecycle.data.filename}
+      lifecycle={lifecycle.data}
+      onRefresh={() => void lifecycle.mutate()}
       onReset={reset}
-      paper={lifecycle.data.paper}
-      paperId={paperId}
-      paperRevision={lifecycle.data.manuscriptRevision}
       pdfUrl={pdfUrl}
     />
   )
