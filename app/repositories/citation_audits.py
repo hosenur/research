@@ -292,6 +292,29 @@ class CitationAuditRepository:
         *,
         after_revision: int = 0,
     ) -> list[CitationAuditFinding]:
+        return await self._findings_by_review_state(
+            audit_id,
+            after_revision=after_revision,
+            dismissed=False,
+        )
+
+    async def list_dismissed_findings(
+        self,
+        audit_id: str,
+    ) -> list[CitationAuditFinding]:
+        return await self._findings_by_review_state(
+            audit_id,
+            after_revision=0,
+            dismissed=True,
+        )
+
+    async def _findings_by_review_state(
+        self,
+        audit_id: str,
+        *,
+        after_revision: int,
+        dismissed: bool,
+    ) -> list[CitationAuditFinding]:
         records = list(await self._session.scalars(
             select(CitationAuditFindingRecord)
             .where(
@@ -302,6 +325,36 @@ class CitationAuditRepository:
         ))
         if not records:
             return []
+        feedback_records = list(
+            await self._session.scalars(
+                select(CitationFeedbackRecord)
+                .where(
+                    CitationFeedbackRecord.finding_id.in_(
+                        [record.id for record in records]
+                    )
+                )
+                .order_by(
+                    CitationFeedbackRecord.created_at,
+                    CitationFeedbackRecord.id,
+                )
+            )
+        )
+        latest_feedback = {
+            feedback.finding_id: feedback.feedback for feedback in feedback_records
+        }
+        records = [
+            record
+            for record in records
+            if (latest_feedback.get(record.id) == "false_positive") == dismissed
+        ]
+        if not records:
+            return []
+        return await self._project_findings(records)
+
+    async def _project_findings(
+        self,
+        records: list[CitationAuditFindingRecord],
+    ) -> list[CitationAuditFinding]:
         candidate_rows = await self._session.execute(
             select(CitationSourceCandidateRecord, ScholarlyWorkRecord)
             .join(
@@ -353,6 +406,7 @@ class CitationAuditRepository:
         status: str,
         *,
         error: str | None = None,
+        source_search_version: int | None = None,
     ) -> CitationAuditFindingRecord:
         finding = await self._session.scalar(
             select(CitationAuditFindingRecord)
@@ -362,11 +416,21 @@ class CitationAuditRepository:
         if finding is None:
             raise RuntimeError("The citation finding was not found.")
         audit = await self._locked(finding.audit_id)
-        if finding.source_search_status != status or finding.source_search_error != error:
+        version_changed = (
+            source_search_version is not None
+            and finding.source_search_version != source_search_version
+        )
+        if (
+            finding.source_search_status != status
+            or finding.source_search_error != error
+            or version_changed
+        ):
             audit.revision += 1
             finding.revision = audit.revision
             finding.source_search_status = status
             finding.source_search_error = error[:1_000] if error else None
+            if source_search_version is not None:
+                finding.source_search_version = source_search_version
         await self._session.commit()
         return finding
 
@@ -403,6 +467,12 @@ class CitationAuditRepository:
         candidate = await self._session.scalar(select(CitationSourceCandidateRecord).where(CitationSourceCandidateRecord.id == candidate_id, CitationSourceCandidateRecord.finding_id == finding_id).with_for_update())
         if finding is None or candidate is None:
             raise RuntimeError("The citation source candidate was not found.")
+        if decision == "accepted" and (
+            candidate.support_status != "verified" or candidate.supports_claim is not True
+        ):
+            raise RuntimeError(
+                "Only a provider source verified to support this claim can be accepted."
+            )
         audit = await self._locked(finding.audit_id)
         candidate.decision = decision
         candidate.decided_at = func.now()
@@ -462,6 +532,9 @@ class CitationAuditRepository:
             actor_id=actor_id,
             note=note,
         )
+        audit = await self._locked(finding.audit_id)
+        audit.revision += 1
+        finding.revision = audit.revision
         self._session.add(record)
         await self._session.commit()
         return record

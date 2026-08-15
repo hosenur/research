@@ -224,6 +224,10 @@ export function useOpenAlexEnrichment({
   const startedRef = useRef(false)
 
   useEffect(() => {
+    setCurrentPaper(paper)
+  }, [paper])
+
+  useEffect(() => {
     if (startedRef.current) return
     startedRef.current = true
     void start.trigger()

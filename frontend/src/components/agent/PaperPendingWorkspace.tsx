@@ -1,10 +1,11 @@
 import type { CSSProperties } from 'react'
 import {
-  ArrowPathIcon as Processing,
-  ArrowTopRightOnSquareIcon as ExternalLink,
-  ExclamationTriangleIcon as Warning,
+  ArrowSquareOutIcon as ExternalLink,
   PlusIcon as NewPaper,
-} from '@heroicons/react/24/solid'
+  SpinnerGapIcon as Processing,
+  WarningIcon as Warning,
+} from '@phosphor-icons/react'
+import { AgentChat } from '@/components/agent/AgentChat'
 import { PaperPipelineStatus } from '@/components/agent/PaperPipelineStatus'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -31,6 +32,7 @@ export function PaperPendingWorkspace({
   pdfUrl,
 }: PaperPendingWorkspaceProps) {
   const failed = lifecycle.status === 'failed'
+  const quickReadReady = lifecycle.retrievalMode === 'provisional'
 
   return (
     <section aria-label="Research paper workspace" className="min-h-dvh w-full bg-bg">
@@ -78,14 +80,16 @@ export function PaperPendingWorkspace({
         </Sidebar>
 
         <SidebarInset className="min-h-0 max-lg:w-full">
-          <div className="grid min-h-full content-center gap-3 p-4 sm:p-8">
+          <div className="flex min-h-full flex-col gap-3 p-4 sm:p-6">
             <Card className="bg-overlay shadow-overlay">
               <CardHeader
                 title={failed ? 'Paper parsing needs attention' : 'Building your review workspace'}
                 description={
                   failed
                     ? 'The original PDF is safe. Background retries may still recover this paper.'
-                    : 'Keep reading the PDF while GROBID extracts its structure and citations.'
+                    : quickReadReady
+                      ? 'Ask broad questions now while GROBID extracts citation-safe structure.'
+                      : 'Keep reading the PDF while fast text extraction and GROBID run together.'
                 }
               />
               <CardContent className="border-t px-4 py-4">
@@ -98,6 +102,9 @@ export function PaperPendingWorkspace({
                     )}
                     {failed ? 'Parse failed' : 'Authoritative parse running'}
                   </Badge>
+                  {quickReadReady ? (
+                    <Badge intent="warning">Quick read · provisional</Badge>
+                  ) : null}
                   {failed ? (
                     <Button intent="outline" onPress={onRefresh} size="sm">
                       <Processing />
@@ -111,12 +118,29 @@ export function PaperPendingWorkspace({
                   </p>
                 ) : (
                   <p className="mt-3 text-sm/6 text-muted-fg">
-                    Chat and citation-sensitive actions unlock as soon as the authoritative paper model is ready.
+                    {quickReadReady
+                      ? 'Broad paper chat is ready. Citation review and editing remain locked until the authoritative parse arrives.'
+                      : 'Quick read will unlock broad chat first; citation-sensitive actions unlock with the authoritative paper model.'}
                   </p>
                 )}
               </CardContent>
             </Card>
             <PaperPipelineStatus paperId={lifecycle.id} />
+            {quickReadReady ? (
+              <Card className="flex min-h-[32rem] flex-1 flex-col overflow-hidden bg-overlay shadow-overlay">
+                <CardHeader
+                  title="Quick read"
+                  description="Answers use rough PDF text and automatically switch to authoritative context when parsing finishes."
+                />
+                <CardContent className="min-h-0 flex-1 border-t p-0">
+                  <AgentChat
+                    className="h-full min-h-0"
+                    paper={null}
+                    paperId={lifecycle.id}
+                  />
+                </CardContent>
+              </Card>
+            ) : null}
           </div>
         </SidebarInset>
       </SidebarProvider>

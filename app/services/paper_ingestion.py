@@ -9,6 +9,7 @@ from bullmq import Queue
 
 from app.repositories.artifacts import PaperArtifactStore
 from app.repositories.papers import PaperDocumentRepository
+from app.repositories.pipeline import PaperPipelineRepository
 from app.schemas.documents import PaperLifecycle
 from app.services.papers import validate_pdf
 
@@ -19,12 +20,16 @@ class PaperIngestionService:
     def __init__(
         self,
         documents: PaperDocumentRepository,
+        pipeline: PaperPipelineRepository,
         artifacts: PaperArtifactStore,
         parse_queue: Queue,
+        quick_read_queue: Queue,
     ) -> None:
         self._documents = documents
+        self._pipeline = pipeline
         self._artifacts = artifacts
         self._parse_queue = parse_queue
+        self._quick_read_queue = quick_read_queue
 
     async def ingest(self, filename: str, content: bytes) -> PaperLifecycle:
         pdf = validate_pdf(content)
@@ -43,7 +48,19 @@ class PaperIngestionService:
             content_sha256=content_sha256,
             source_object_key=object_key,
         )
+        await self._pipeline.initialize(paper_id)
         try:
+            await self._quick_read_queue.add(
+                "quick-read-paper",
+                {"paperId": paper_id},
+                {
+                    "jobId": quick_read_job_id(paper_id),
+                    "attempts": 3,
+                    "backoff": {"type": "exponential", "delay": 1_000},
+                    "removeOnComplete": False,
+                    "removeOnFail": False,
+                },
+            )
             await self._parse_queue.add(
                 "parse-paper",
                 {"paperId": paper_id},
@@ -66,3 +83,7 @@ class PaperIngestionService:
 
 def parse_job_id(paper_id: str) -> str:
     return f"paper-parse-{paper_id}"
+
+
+def quick_read_job_id(paper_id: str) -> str:
+    return f"paper-quick-read-{paper_id}"

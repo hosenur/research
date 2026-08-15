@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import Field
@@ -16,9 +17,161 @@ class PaperLifecycle(ApiModel):
     filename: str
     status: Literal["uploaded", "parsing", "ready", "failed"]
     revision: int = Field(ge=1)
+    manuscript_revision: int = Field(default=1, ge=1)
     paper: Paper | None = None
     error: str | None = None
     source_url: str
+    retrieval_mode: Literal["unavailable", "provisional", "authoritative"] = "unavailable"
+
+
+class PaperPipelineStage(ApiModel):
+    name: str
+    status: Literal["not_started", "queued", "running", "completed", "failed", "skipped"]
+    attempt: int = Field(default=0, ge=0)
+    revision: int = Field(default=1, ge=1)
+    progress: dict[str, object] = Field(default_factory=dict)
+    error: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_ms: int | None = Field(default=None, ge=0)
+
+
+class PaperPipeline(ApiModel):
+    paper_id: str
+    stages: list[PaperPipelineStage] = Field(default_factory=list)
+
+
+class ClaimCitationFinding(ApiModel):
+    id: str
+    sentence_id: str
+    section_id: str
+    section_title: str
+    paragraph_id: str
+    citation_id: str | None = None
+    reference_id: str
+    claim_text: str
+    citation_text: str
+    work_title: str | None = None
+    source_url: str | None = None
+    providers: list[str] = Field(default_factory=list)
+    priority_score: float | None = None
+    classification: Literal["supported", "weak", "contradicted", "unverifiable"]
+    confidence: float = Field(ge=0, le=1)
+    explanation: str
+    evidence_text: str | None = None
+
+
+class ClaimCitationReviewStatus(ApiModel):
+    paper_id: str
+    status: Literal["not_started", "queued", "running", "completed", "failed"]
+    findings: list[ClaimCitationFinding] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+    completed: int = Field(default=0, ge=0)
+    error: str | None = None
+
+
+class EditCommandRequest(ApiModel):
+    command: str = Field(min_length=3, max_length=4_000)
+    base_revision: int = Field(ge=1)
+
+
+class BibliographyChange(ApiModel):
+    action: Literal["add", "reuse", "remove", "retain"]
+    reference_id: str
+    citation_marker: str | None = None
+    before_text: str | None = None
+    after_text: str | None = None
+
+
+class EditOperation(ApiModel):
+    id: str
+    position: int = Field(ge=0)
+    operation_type: Literal[
+        "replace_text",
+        "insert_citation",
+        "remove_citation",
+        "restore_revision",
+    ]
+    node_ids: list[str] = Field(default_factory=list)
+    before_text: str
+    after_text: str
+    rationale: str
+    validation_status: Literal["valid", "invalid"]
+    validation_error: str | None = None
+    approved: bool = False
+    bibliography_change: BibliographyChange | None = None
+
+
+class EditProposal(ApiModel):
+    id: str
+    paper_id: str
+    base_revision: int = Field(ge=1)
+    command: str
+    status: Literal["planned", "approved", "rejected", "conflict", "invalid"]
+    summary: str
+    warnings: list[str] = Field(default_factory=list)
+    operations: list[EditOperation] = Field(default_factory=list)
+    approved_revision: int | None = None
+
+
+class EditApprovalRequest(ApiModel):
+    operation_ids: list[str] | None = None
+
+
+class RevisionRevertRequest(ApiModel):
+    operation_ids: list[str]
+
+
+class ManuscriptRevisionSummary(ApiModel):
+    revision: int = Field(ge=1)
+    parent_revision: int | None = None
+    source: Literal["parse", "edit", "restore", "revert"]
+    summary: str | None = None
+    proposal_id: str | None = None
+    created_at: datetime
+    operations: list[EditOperation] = Field(default_factory=list)
+
+
+class ManuscriptRevisionDetail(ManuscriptRevisionSummary):
+    paper: Paper
+
+
+class ManuscriptRevisionList(ApiModel):
+    paper_id: str
+    current_revision: int = Field(ge=1)
+    revisions: list[ManuscriptRevisionSummary] = Field(default_factory=list)
+
+
+class CitationStyleRequest(ApiModel):
+    style_id: str = Field(min_length=1, max_length=255)
+
+
+class CitationStyleStatus(ApiModel):
+    paper_id: str
+    style_id: str | None = None
+    confirmed: bool = False
+    detected_family: str | None = None
+    candidates: list[dict[str, str]] = Field(default_factory=list)
+
+
+class PaperExportRequest(ApiModel):
+    revision: int = Field(ge=1)
+
+
+class PaperExport(ApiModel):
+    id: str
+    paper_id: str
+    revision: int = Field(ge=1)
+    style_id: str
+    status: Literal["queued", "running", "completed", "failed"]
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+    latex_url: str | None = None
+    pdf_url: str | None = None
+
+
+class SectionReviewRequest(ApiModel):
+    section_ids: list[str] = Field(min_length=1, max_length=5)
 
 
 class ReferenceEnrichmentUpdate(ApiModel):
@@ -151,6 +304,7 @@ class CitationAuditStatus(CitationAuditJob):
     model: str
     progress: CitationAuditProgress = Field(default_factory=CitationAuditProgress)
     findings: list[CitationAuditFinding] = Field(default_factory=list)
+    dismissed_findings: list[CitationAuditFinding] = Field(default_factory=list)
     source_search_pending: int = Field(default=0, ge=0)
     error: str | None = None
 

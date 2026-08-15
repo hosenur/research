@@ -34,9 +34,12 @@ MISSING_WORK_MAX_CLAIMS = 4
 MISSING_WORK_RESULTS_PER_CLAIM = 5
 OPENALEX_QUEUE_NAME = "paper-enrichment"
 CLAIM_AUDIT_QUEUE_NAME = "citation-audit"
+CLAIM_CITATION_REVIEW_QUEUE_NAME = "claim-citation-review"
 SOURCE_SEARCH_QUEUE_NAME = "citation-source-search"
 PAPER_INDEX_QUEUE_NAME = "paper-index"
 PAPER_PARSE_QUEUE_NAME = "paper-parse"
+PAPER_QUICK_READ_QUEUE_NAME = "paper-quick-read"
+PAPER_EXPORT_QUEUE_NAME = "paper-export"
 BULLMQ_SCHEMA = "bullmq"
 
 

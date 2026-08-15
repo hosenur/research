@@ -1,4 +1,4 @@
-import { ChevronRightIcon } from '@heroicons/react/20/solid'
+import { CaretRightIcon as ChevronRightIcon } from '@phosphor-icons/react'
 import { Button } from 'react-aria-components/Button'
 import type {
   TreeItemContentProps,

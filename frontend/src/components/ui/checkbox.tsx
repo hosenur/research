@@ -1,4 +1,4 @@
-import { CheckIcon, MinusIcon } from '@heroicons/react/20/solid'
+import { CheckIcon, MinusIcon } from '@phosphor-icons/react'
 import {
   CheckboxButton,
   type CheckboxButtonProps,

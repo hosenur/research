@@ -174,6 +174,7 @@ Keep `POST /papers/parse` temporarily as a compatibility path, then remove it af
 - `POST /papers/{paperId}/edits` — plan an edit against a required base revision.
 - `GET /papers/{paperId}/edits/{proposalId}` — retrieve operations, validation, and diff.
 - `POST /papers/{paperId}/edits/{proposalId}/approve` — approve all or selected hunks.
+- `POST /papers/{paperId}/edits/{proposalId}/discard` — reject a pending proposal without changing the manuscript.
 - `GET /papers/{paperId}/revisions` and `/revisions/{revision}` — history and comparison.
 - `POST /papers/{paperId}/revisions/{revision}/restore` — create a new revision restoring prior content.
 
@@ -210,7 +211,7 @@ Stable BullMQ job IDs make every stage idempotent. Workers commit incremental ba
 ### Workspace
 
 - Primary surface: structured manuscript viewer/editor.
-- Context panel tabs: Review, Agent, References, and Processing.
+- Context panel tabs: Review, Agent, References, and Export.
 - Optional original-PDF split view.
 - Before authoritative parsing: PDF plus Quick-read status; citation-sensitive controls are disabled with a reason.
 - After parsing: manuscript appears, chat promotes automatically, review findings anchor to exact nodes, and ordinary editing unlocks.
@@ -220,7 +221,8 @@ Stable BullMQ job IDs make every stage idempotent. Workers commit incremental ba
 - One inbox grouped by missing citation, weak support, contradiction, and uncertainty.
 - Clicking a finding scrolls to and highlights the exact manuscript sentence.
 - Candidate cards show provider links, evidence, confidence, and honest unverifiable states.
-- `Use source` opens the proposal diff instead of changing the paper.
+- `Use source` opens a controlled Intent UI modal containing the proposal diff and Approve/Discard actions instead of changing the paper.
+- Keep resolved findings accessible and use an SWR mutation to prepare a reversible `Remove source` proposal in the same modal.
 
 ### Editing
 
@@ -245,6 +247,8 @@ Record stage queue latency, runtime, attempt count, provider latency, model batc
 
 ### Phase 1 — durable ingestion foundation
 
+**Status: complete.**
+
 - MinIO/local artifact adapters and bucket bootstrap.
 - Paper lifecycle migration and repository methods.
 - `POST /papers`, lifecycle polling, source-PDF endpoint, parse queue, parse worker, automatic downstream fan-out.
@@ -254,12 +258,16 @@ Record stage queue latency, runtime, attempt count, provider latency, model batc
 
 ### Phase 2 — Quick read
 
+**Status: complete.**
+
 - Fast full-text extraction, provisional chunker, provisional pgvector generation, and phase-aware search.
 - Chat labels provisional answers and promotes future turns to authoritative context without rewriting history.
 
 **Acceptance:** broad chat becomes available within the target while citation-sensitive actions stay locked.
 
 ### Phase 3 — manuscript-centered workspace
+
+**Status: complete.**
 
 - Typed Paper AST projection in the frontend.
 - Structured sections, citation anchors, quality summary, contextual tabs, and optional PDF split.
@@ -269,6 +277,8 @@ Record stage queue latency, runtime, attempt count, provider latency, model batc
 
 ### Phase 4 — complete peer review
 
+**Status: complete.**
+
 - Existing claim/citation pair extraction, embedding priority, batched verification, and anchored classifications.
 - Unified review inbox and progressive findings alongside the existing missing-work pipeline.
 
@@ -276,12 +286,17 @@ Record stage queue latency, runtime, attempt count, provider latency, model batc
 
 ### Phase 5 — constrained editing and revisions
 
-- Operation schema, agent planner tools, invariant validator, diff projection, approval, and immutable history.
+**Status: complete.**
+
+- One mode-free agent chat, typed operation schema, all-version agent tools, invariant validator, inline diff projection, explicit Approve/Discard actions, and immutable history.
 - Convert accepted source candidates into citation/bibliography edit proposals.
+- Support exact historical revision restore and targeted undo of a specific older operation without discarding later unrelated work.
 
 **Acceptance:** a natural-language command can safely shorten a section and add a verified citation without silently losing existing citations.
 
 ### Phase 6 — CSL and export
+
+**Status: complete.**
 
 - Style confirmation, CSL processor, LaTeX renderer/compiler, warning model, and MinIO export downloads.
 
@@ -289,9 +304,11 @@ Record stage queue latency, runtime, attempt count, provider latency, model batc
 
 ### Phase 7 — hardening and submission evidence
 
+**Status: engineering and evidence complete; the final browser recording is a manual submission artifact.**
+
 - Independent stage retries, 80-page policy, metrics, error copy, performance measurement, system-design diagrams, known limitations, AI-use note, and real-paper recording.
 
-The assignment expects core-behavior tests. Repository policy requires explicit user authorization before adding or running them, so test implementation is intentionally deferred until that authorization is given. Production builds and static checks remain allowed throughout.
+The user authorized a complete endpoint smoke test. All 37 OpenAPI operations were exercised with real paper state; the exact record, timings, edit invariants, export artifact checks, and defects fixed during the run are in `SMOKE_RESULTS.md`. The frontend production build, backend compile, Docker build, migration head, and service health checks also pass. The remaining human submission action is recording the scripted browser walkthrough in `SUBMISSION.md`.
 
 ## Deployment discipline
 

@@ -141,6 +141,18 @@ async def enqueue_pending_source_searches(
                 },
             )
             enqueued += 1
+        elif await job.getState() == "failed":
+            # A deployment may fix the cause of an exhausted job while the durable
+            # finding still correctly says its search is pending. Reprocess that
+            # same idempotency key instead of leaving the finding queued forever.
+            await job.retry(
+                "failed",
+                {
+                    "resetAttemptsMade": True,
+                    "resetAttemptsStarted": True,
+                },
+            )
+            enqueued += 1
     return enqueued
 
 

@@ -29,7 +29,9 @@ class PaperRecord(Base):
     parse_completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    manuscript_revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -61,8 +63,20 @@ class ChatMessageRecord(Base):
 class PaperChunkRecord(Base):
     __tablename__ = "paper_chunks"
     __table_args__ = (
-        UniqueConstraint("paper_id", "chunk_key", name="uq_paper_chunk_key"),
-        Index("ix_paper_chunks_paper_order", "paper_id", "chunk_order"),
+        UniqueConstraint(
+            "paper_id",
+            "index_kind",
+            "generation",
+            "chunk_key",
+            name="uq_paper_chunk_generation_key",
+        ),
+        Index(
+            "ix_paper_chunks_paper_index_order",
+            "paper_id",
+            "index_kind",
+            "generation",
+            "chunk_order",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -72,10 +86,43 @@ class PaperChunkRecord(Base):
     section_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     section_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     reference_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    index_kind: Mapped[str] = mapped_column(
+        String(32), default="authoritative", server_default="authoritative"
+    )
+    paper_revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    generation: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     text: Mapped[str] = mapped_column(Text)
     chunk_order: Mapped[int] = mapped_column(Integer)
     embedding: Mapped[list[float]] = mapped_column(Vector(1536))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PaperPipelineStageRecord(Base):
+    __tablename__ = "paper_pipeline_stages"
+    __table_args__ = (
+        Index("ix_paper_pipeline_stages_status", "paper_id", "status"),
+    )
+
+    paper_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    stage: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(
+        String(32), default="not_started", server_default="not_started"
+    )
+    attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    progress: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class ReferenceEnrichmentRecord(Base):
@@ -206,6 +253,133 @@ class CitationAuditDecisionRecord(Base):
     explanation: Mapped[str] = mapped_column(Text)
     accepted: Mapped[bool]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ClaimCitationReviewRecord(Base):
+    __tablename__ = "claim_citation_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "paper_id", "paper_revision", "sentence_id", "reference_id",
+            name="uq_claim_citation_review_pair",
+        ),
+        Index(
+            "ix_claim_citation_reviews_paper_classification",
+            "paper_id", "classification",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(String(36), ForeignKey("papers.id", ondelete="CASCADE"))
+    paper_revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    sentence_id: Mapped[str] = mapped_column(String(255))
+    section_id: Mapped[str] = mapped_column(String(255))
+    section_title: Mapped[str] = mapped_column(String(512))
+    paragraph_id: Mapped[str] = mapped_column(String(255))
+    citation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reference_id: Mapped[str] = mapped_column(String(255))
+    claim_text: Mapped[str] = mapped_column(Text)
+    citation_text: Mapped[str] = mapped_column(Text)
+    work_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("scholarly_works.id", ondelete="SET NULL"), nullable=True)
+    work_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    priority_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    classification: Mapped[str] = mapped_column(String(32), default="unverifiable", server_default="unverifiable")
+    confidence: Mapped[float] = mapped_column(Float, default=0, server_default="0")
+    explanation: Mapped[str] = mapped_column(Text, default="", server_default="")
+    evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), default="pending", server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ManuscriptRevisionRecord(Base):
+    __tablename__ = "manuscript_revisions"
+    __table_args__ = (
+        UniqueConstraint("paper_id", "revision", name="uq_manuscript_revision_number"),
+        Index("ix_manuscript_revisions_paper_created", "paper_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(String(36), ForeignKey("papers.id", ondelete="CASCADE"))
+    revision: Mapped[int] = mapped_column(Integer)
+    parent_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    paper_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    source: Mapped[str] = mapped_column(String(32), default="parse", server_default="parse")
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposal_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EditProposalRecord(Base):
+    __tablename__ = "edit_proposals"
+    __table_args__ = (Index("ix_edit_proposals_paper_created", "paper_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(String(36), ForeignKey("papers.id", ondelete="CASCADE"))
+    base_revision: Mapped[int] = mapped_column(Integer)
+    command: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="planned", server_default="planned")
+    summary: Mapped[str] = mapped_column(Text)
+    warnings: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default="[]")
+    model: Mapped[str] = mapped_column(String(128))
+    approved_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EditOperationRecord(Base):
+    __tablename__ = "edit_operations"
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "position", name="uq_edit_operation_position"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(String(36), ForeignKey("edit_proposals.id", ondelete="CASCADE"))
+    position: Mapped[int] = mapped_column(Integer)
+    operation_type: Mapped[str] = mapped_column(String(32))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    node_ids: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default="[]")
+    before_text: Mapped[str] = mapped_column(Text)
+    after_text: Mapped[str] = mapped_column(Text)
+    rationale: Mapped[str] = mapped_column(Text, default="", server_default="")
+    validation_status: Mapped[str] = mapped_column(String(32))
+    validation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PaperCSLStyleRecord(Base):
+    __tablename__ = "paper_csl_styles"
+
+    paper_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    style_id: Mapped[str] = mapped_column(String(255))
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    detected_family: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PaperExportRecord(Base):
+    __tablename__ = "paper_exports"
+    __table_args__ = (Index("ix_paper_exports_paper_created", "paper_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(String(36), ForeignKey("papers.id", ondelete="CASCADE"))
+    manuscript_revision: Mapped[int] = mapped_column(Integer)
+    style_id: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="queued", server_default="queued")
+    latex_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pdf_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    warnings: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default="[]")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    compiler_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ProviderCacheRecord(Base):

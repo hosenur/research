@@ -10,6 +10,7 @@ RUN apt-get update \
         ocrmypdf \
         poppler-utils \
         tesseract-ocr-eng \
+        texlive-latex-base \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

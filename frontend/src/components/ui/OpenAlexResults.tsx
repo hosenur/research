@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import {
   ArrowUpRightIcon as ArrowUpRight,
-  ChevronDownIcon as ChevronDown,
-} from '@heroicons/react/24/solid'
+  CaretDownIcon as ChevronDown,
+} from '@phosphor-icons/react'
 
 export type OpenAlexStatus = 'matched' | 'unmatched' | 'error' | 'skipped'
 

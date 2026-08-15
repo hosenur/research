@@ -4,12 +4,13 @@ import asyncio
 from pathlib import Path
 
 import httpx
-from bullmq import Job, Worker
+from bullmq import Job, Queue, Worker
 
 from app.cache.jsonl import JsonlCache
 from app.config import (
     OPENALEX_CONCURRENCY,
     OPENALEX_QUEUE_NAME,
+    CLAIM_CITATION_REVIEW_QUEUE_NAME,
     OPENALEX_TIMEOUT_SECONDS,
     bullmq_options,
     openalex_api_key,
@@ -21,10 +22,12 @@ from app.config import (
 from app.database.session import get_session_factory
 from app.repositories.openalex import OpenAlexRepository
 from app.repositories.papers import PaperDocumentRepository
+from app.repositories.pipeline import PaperPipelineRepository
 from app.repositories.scholarly_works import ScholarlyWorkRepository
 from app.schemas.documents import EnrichmentProgress
 from app.schemas.paper import Reference
 from app.services.openalex import OpenAlexEnricher
+from app.services.paper_pipeline import claim_citation_review_job_id
 
 
 async def run() -> None:
@@ -51,12 +54,60 @@ async def run() -> None:
             cache=scholarly_works,
         )
         enricher = OpenAlexEnricher(provider)
+        existing_citation_queue = Queue(
+            CLAIM_CITATION_REVIEW_QUEUE_NAME, bullmq_options()
+        )
 
         async def process(job: Job, _token: str) -> dict[str, int]:
             paper_id = str(job.data.get("paperId") or "")
             if not paper_id:
                 raise ValueError("The enrichment job is missing paperId.")
-            return await enrich_document(job, paper_id, enricher)
+            try:
+                async with get_session_factory()() as session:
+                    await PaperPipelineRepository(session).begin(
+                        paper_id, "reference-resolution"
+                    )
+                result = await enrich_document(job, paper_id, enricher)
+                async with get_session_factory()() as session:
+                    pipeline = PaperPipelineRepository(session)
+                    document = await PaperDocumentRepository(session).get(paper_id)
+                    page_count = (
+                        document.paper.extraction.preflight.page_count
+                        if document.paper.extraction else None
+                    )
+                    await pipeline.complete(
+                        paper_id, "reference-resolution", progress=result
+                    )
+                    if page_count and page_count > 80:
+                        await pipeline.skip(
+                            paper_id,
+                            "existing-citation-review",
+                            "Whole-document automatic review is limited to 80 pages. Choose up to five sections to review.",
+                            progress={"pageCount": page_count},
+                        )
+                    else:
+                        await pipeline.queued(paper_id, "existing-citation-review")
+                if not page_count or page_count <= 80:
+                    review_job_id = claim_citation_review_job_id(paper_id)
+                    if await Job.fromId(existing_citation_queue, review_job_id) is None:
+                        await existing_citation_queue.add(
+                            "review-existing-citations",
+                            {"paperId": paper_id},
+                            {
+                                "jobId": review_job_id,
+                                "attempts": 4,
+                                "backoff": {"type": "exponential", "delay": 2_000},
+                                "removeOnComplete": False,
+                                "removeOnFail": False,
+                            },
+                        )
+                return result
+            except Exception as exc:
+                async with get_session_factory()() as session:
+                    await PaperPipelineRepository(session).fail(
+                        paper_id, "reference-resolution", str(exc)
+                    )
+                raise
 
         worker = Worker(
             OPENALEX_QUEUE_NAME,

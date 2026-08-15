@@ -1,6 +1,6 @@
 'use client'
 
-import { XMarkIcon } from '@heroicons/react/24/solid'
+import { XIcon as XMarkIcon } from '@phosphor-icons/react'
 import { Button as PrimitiveButton } from 'react-aria-components/Button'
 import { Dialog as PrimitiveDialog } from 'react-aria-components/Dialog'
 import { Heading, type HeadingProps } from 'react-aria-components/Heading'

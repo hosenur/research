@@ -8,17 +8,17 @@ import {
   useState,
 } from "react";
 import {
-  ArrowPathIcon as Refresh,
+  ArrowClockwiseIcon as Refresh,
   ArrowUpIcon as ArrowUp,
-  ChatBubbleBottomCenterTextIcon as TextBox,
-  ChatBubbleLeftRightIcon as ChatBubbleQuestion,
+  ChatCenteredTextIcon as TextBox,
+  ChatsCircleIcon as ChatBubbleQuestion,
   CheckIcon as Check,
-  ChevronRightIcon as NavArrowRight,
-  FaceSmileIcon as EmojiSatisfied,
+  CaretRightIcon as NavArrowRight,
+  SmileyIcon as EmojiSatisfied,
   ScissorsIcon as Scissor,
-  SparklesIcon as Spark,
-  XMarkIcon as Xmark,
-} from "@heroicons/react/24/solid";
+  SparkleIcon as Spark,
+  XIcon as Xmark,
+} from "@phosphor-icons/react";
 import { Shimmer } from "./internal/Shimmer";
 import { StreamText } from "./internal/StreamText";
 

@@ -14,13 +14,17 @@
 - OpenAlex and Semantic Scholar are the only sources for suggested academic work. Surface links, evidence, confidence, unmatched references, empty searches, and failures; never invent or silently discard citations.
 - A source without usable provider evidence is `unverifiable`: show it honestly, but do not offer automatic insertion based on its title or model memory.
 - CSL-JSON is the canonical citation model. Detect style without interrupting review, then require confirmation before the first citation-changing edit or export and render through a real CSL processor.
-- **Use source** proposes both the in-text citation and CSL bibliography entry; it never changes the manuscript immediately.
+- **Use source** opens a focused proposal modal for the in-text citation and CSL bibliography entry; it never changes the manuscript until the user approves inside that modal.
+- An applied source stays visible as a resolved finding with **Remove source**. Removal prepares the exact inverse diff and also requires approval.
 - Translate natural-language edits into constrained AST operations rather than accepting free-form rewritten documents. Show one command-level diff with optional sentence-level approval and apply nothing without approval.
+- Keep questions and editing in one mode-free Agent conversation. The agent decides whether to answer or prepare an edit proposal; every proposal appears inline with Approve and Discard actions and is never applied automatically.
 - Every approved command creates an immutable, comparable revision with selective revert and restore. A hard validation gate rejects silent citation loss, unsupported new claims, broken anchors, and structural damage before approval.
+- Give the agent tools for every revision summary, approved operation, and complete historical Paper AST so a user can restore any version or undo one specific older change without discarding unrelated later work.
 - Export prioritizes semantic fidelity over visual fidelity. Produce both an editable LaTeX project and compiled PDF; preserve recoverable structure and explicitly warn about figures, equations, or formatting that cannot be reconstructed safely.
 - Keep pipeline stages independent and durable after the browser disconnects. Preserve successful results, retry failed stages with backoff, expose manual retry, and restore the complete workspace from `/papers/:paperId`.
-- Make the structured manuscript/editor primary. Use a contextual panel for Review, Agent, References, and Processing, with the immutable original PDF available as an optional split view.
+- Make the structured manuscript/editor primary. Use a contextual panel for Review, Agent, References, and Export, with the immutable original PDF available as an optional split view.
 - Anchor findings to exact manuscript nodes and provide a review inbox grouped by missing citation, weak support, contradiction, and uncertainty. Summarize extraction quality and keep partial or unresolved citations inspectable inline.
+- When a user opens a review finding in the manuscript, highlight the exact anchored text strongly for a few seconds and then fade the highlight without altering the document.
 - Target a sub-second initial workspace, a durable ID when upload finishes, Quick read within 5 seconds, authoritative parsing within 30 seconds, and the first verified finding within 45 seconds for a typical 20-page born-digital paper.
 - Definition of done is one recorded vertical workflow: upload, Quick read, authoritative parse, structured manuscript, both review lanes, verified source, proposed edit, approval, revision history, and LaTeX/PDF export, backed by system-design documentation.
 - The demo should warn users not to upload confidential manuscripts even though authentication is intentionally out of scope.

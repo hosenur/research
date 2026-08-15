@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { ExclamationTriangleIcon as Warning } from '@heroicons/react/24/solid'
+import { WarningIcon as Warning } from '@phosphor-icons/react'
 import { PaperPendingWorkspace } from '@/components/agent/PaperPendingWorkspace'
 import { PaperWorkspace } from '@/components/agent/PaperWorkspace'
 import { Button } from '@/components/ui/button'
@@ -58,11 +58,12 @@ function PersistedPaperPage() {
 
   return (
     <PaperWorkspace
+      documentRevision={lifecycle.data.revision}
       filename={lifecycle.data.filename}
       onReset={reset}
       paper={lifecycle.data.paper}
       paperId={paperId}
-      paperRevision={lifecycle.data.revision}
+      paperRevision={lifecycle.data.manuscriptRevision}
       pdfUrl={pdfUrl}
     />
   )

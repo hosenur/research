@@ -3,6 +3,7 @@ from functools import lru_cache
 from typing import Annotated
 
 import httpx
+from openai import AsyncOpenAI
 from fastapi import Depends
 from bullmq import Queue
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,26 +23,55 @@ from app.config import (
     openalex_url,
     bullmq_options,
     CLAIM_AUDIT_QUEUE_NAME,
+    CLAIM_CITATION_REVIEW_QUEUE_NAME,
     OPENALEX_QUEUE_NAME,
     SOURCE_SEARCH_QUEUE_NAME,
     PAPER_INDEX_QUEUE_NAME,
     PAPER_PARSE_QUEUE_NAME,
+    PAPER_QUICK_READ_QUEUE_NAME,
+    PAPER_EXPORT_QUEUE_NAME,
+    OPENAI_TIMEOUT_SECONDS,
+    openai_api_key,
+    openai_base_url,
+    openai_chat_model,
 )
 from app.repositories.grobid import GrobidRepository
 from app.repositories.openalex import OpenAlexRepository
 from app.repositories.papers import PaperDocumentRepository
+from app.repositories.pipeline import PaperPipelineRepository
+from app.repositories.claim_citations import ClaimCitationReviewRepository
+from app.repositories.exports import PaperExportRepository
 from app.repositories.scholarly_works import ScholarlyWorkRepository
 from app.services.missing_works import MissingWorkFinder
 from app.services.openalex import OpenAlexEnricher
 from app.services.paper_ingestion import PaperIngestionService
 from app.services.papers import PaperService
 from app.services.pdf_preflight import PdfPreflightService
+from app.services.manuscript_revisions import ManuscriptEditPlanner, ManuscriptRevisionService
 
 
 def get_paper_document_repository(
     session: Annotated[AsyncSession, Depends(get_database_session)],
 ) -> PaperDocumentRepository:
     return PaperDocumentRepository(session)
+
+
+def get_paper_pipeline_repository(
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> PaperPipelineRepository:
+    return PaperPipelineRepository(session)
+
+
+def get_claim_citation_review_repository(
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> ClaimCitationReviewRepository:
+    return ClaimCitationReviewRepository(session)
+
+
+def get_paper_export_repository(
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> PaperExportRepository:
+    return PaperExportRepository(session)
 
 
 def get_citation_audit_repository(
@@ -61,6 +91,11 @@ def get_citation_audit_queue() -> Queue:
 
 
 @lru_cache(maxsize=1)
+def get_claim_citation_review_queue() -> Queue:
+    return Queue(CLAIM_CITATION_REVIEW_QUEUE_NAME, bullmq_options())
+
+
+@lru_cache(maxsize=1)
 def get_source_search_queue() -> Queue:
     return Queue(SOURCE_SEARCH_QUEUE_NAME, bullmq_options())
 
@@ -72,6 +107,16 @@ def get_paper_index_queue() -> Queue:
 @lru_cache(maxsize=1)
 def get_paper_parse_queue() -> Queue:
     return Queue(PAPER_PARSE_QUEUE_NAME, bullmq_options())
+
+
+@lru_cache(maxsize=1)
+def get_paper_quick_read_queue() -> Queue:
+    return Queue(PAPER_QUICK_READ_QUEUE_NAME, bullmq_options())
+
+
+@lru_cache(maxsize=1)
+def get_paper_export_queue() -> Queue:
+    return Queue(PAPER_EXPORT_QUEUE_NAME, bullmq_options())
 
 
 async def get_grobid_client() -> AsyncIterator[httpx.AsyncClient]:
@@ -114,10 +159,12 @@ def get_paper_service(
 
 def get_paper_ingestion_service(
     documents: Annotated[PaperDocumentRepository, Depends(get_paper_document_repository)],
+    pipeline: Annotated[PaperPipelineRepository, Depends(get_paper_pipeline_repository)],
     artifacts: Annotated[PaperArtifactStore, Depends(get_extraction_artifact_store)],
     parse_queue: Annotated[Queue, Depends(get_paper_parse_queue)],
+    quick_read_queue: Annotated[Queue, Depends(get_paper_quick_read_queue)],
 ) -> PaperIngestionService:
-    return PaperIngestionService(documents, artifacts, parse_queue)
+    return PaperIngestionService(documents, pipeline, artifacts, parse_queue, quick_read_queue)
 
 
 @lru_cache(maxsize=1)
@@ -165,3 +212,24 @@ def get_missing_work_finder(
     repository: Annotated[OpenAlexRepository, Depends(get_openalex_repository)],
 ) -> MissingWorkFinder:
     return MissingWorkFinder(repository)
+
+
+async def get_manuscript_revision_service(
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> AsyncIterator[ManuscriptRevisionService]:
+    client = AsyncOpenAI(
+        api_key=openai_api_key(),
+        base_url=openai_base_url(),
+        timeout=OPENAI_TIMEOUT_SECONDS,
+    )
+    try:
+        yield ManuscriptRevisionService(
+            session,
+            ManuscriptEditPlanner(
+                client,
+                api_key=openai_api_key(),
+                model=openai_chat_model(),
+            ),
+        )
+    finally:
+        await client.close()

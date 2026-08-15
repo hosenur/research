@@ -35,6 +35,17 @@ class PaperArtifactStore(Protocol):
 
     def read_tei(self, artifact_id: str) -> bytes: ...
 
+    def save_export(
+        self,
+        paper_id: str,
+        export_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> str: ...
+
+    def read_export(self, object_key: str) -> bytes: ...
+
 
 class LocalPaperArtifactStore:
     """Filesystem adapter for local development and single-host deployments."""
@@ -78,8 +89,24 @@ class LocalPaperArtifactStore:
             raise ExtractionArtifactNotFoundError("The TEI extraction artifact was not found.")
         return target.read_bytes()
 
+    def save_export(self, paper_id: str, export_id: str, filename: str, content: bytes, content_type: str) -> str:
+        del content_type
+        object_key = export_object_key(paper_id, export_id, filename)
+        target = self._path_for_key(object_key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.tmp")
+        temporary.write_bytes(content)
+        temporary.replace(target)
+        return object_key
+
+    def read_export(self, object_key: str) -> bytes:
+        target = self._path_for_key(object_key)
+        if not target.is_file():
+            raise ExtractionArtifactNotFoundError("The generated export was not found.")
+        return target.read_bytes()
+
     def _path_for_key(self, object_key: str) -> Path:
-        if not re.fullmatch(r"papers/[a-f0-9-]{36}/source\.pdf", object_key):
+        if not valid_paper_object_key(object_key):
             raise ExtractionArtifactNotFoundError("The source PDF key is invalid.")
         return self._root / object_key
 
@@ -141,6 +168,16 @@ class MinioPaperArtifactStore:
             f"extractions/{artifact_id}.tei.xml",
             "The TEI extraction artifact was not found.",
         )
+
+    def save_export(self, paper_id: str, export_id: str, filename: str, content: bytes, content_type: str) -> str:
+        object_key = export_object_key(paper_id, export_id, filename)
+        self._put(object_key, content, content_type=content_type)
+        return object_key
+
+    def read_export(self, object_key: str) -> bytes:
+        if not valid_paper_object_key(object_key) or "/exports/" not in object_key:
+            raise ExtractionArtifactNotFoundError("The export object key is invalid.")
+        return self._get(object_key, "The generated export was not found.")
 
     def _ensure_bucket(self) -> None:
         if self._bucket_ready:
@@ -214,3 +251,21 @@ def create_paper_artifact_store() -> PaperArtifactStore:
 
 def _normalize_endpoint(endpoint: str) -> str:
     return endpoint.removeprefix("http://").removeprefix("https://").rstrip("/")
+
+
+def export_object_key(paper_id: str, export_id: str, filename: str) -> str:
+    if not re.fullmatch(r"[a-f0-9-]{36}", paper_id) or not re.fullmatch(r"[a-f0-9-]{36}", export_id):
+        raise ExtractionArtifactNotFoundError("The export identity is invalid.")
+    if not re.fullmatch(r"paper-r\d+\.(?:zip|pdf)", filename):
+        raise ExtractionArtifactNotFoundError("The export filename is invalid.")
+    return f"papers/{paper_id}/exports/{export_id}/{filename}"
+
+
+def valid_paper_object_key(object_key: str) -> bool:
+    return bool(
+        re.fullmatch(r"papers/[a-f0-9-]{36}/source\.pdf", object_key)
+        or re.fullmatch(
+            r"papers/[a-f0-9-]{36}/exports/[a-f0-9-]{36}/paper-r\d+\.(?:zip|pdf)",
+            object_key,
+        )
+    )

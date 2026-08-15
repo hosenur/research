@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
@@ -16,6 +18,8 @@ from app.exceptions import (
     PaperDocumentNotReadyError,
     UnsupportedMediaTypeError,
 )
+
+logger = logging.getLogger(__name__)
 
 _STATUS_CODES: dict[type[AppError], int] = {
     FileTooLargeError: status.HTTP_413_CONTENT_TOO_LARGE,
@@ -47,5 +51,18 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "code": exc.code,
                 "retryable": exc.retryable,
                 "context": exc.context,
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(request: Request, _exc: Exception) -> JSONResponse:
+        logger.exception("Unhandled API error on %s", request.url.path)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "detail": "The API could not complete the request.",
+                "code": "internal_server_error",
+                "retryable": False,
+                "context": {},
             },
         )

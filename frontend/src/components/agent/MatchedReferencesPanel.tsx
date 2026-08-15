@@ -1,9 +1,9 @@
 import {
-  ArrowPathIcon as Processing,
-  ArrowTopRightOnSquareIcon as ExternalLink,
+  ArrowSquareOutIcon as ExternalLink,
   CheckCircleIcon as Complete,
   LinkIcon as Match,
-} from '@heroicons/react/24/solid'
+  SpinnerGapIcon as Processing,
+} from '@phosphor-icons/react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader } from '@/components/ui/card'

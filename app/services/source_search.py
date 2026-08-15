@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -62,10 +62,12 @@ class _FindingContext:
 
 
 class _SourceSupportDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     supports_claim: bool
     confidence: float = Field(ge=0, le=1)
     explanation: str
-    evidence: str = ""
+    evidence: str
 
 
 class CitationSourceFulfillment:
@@ -258,6 +260,9 @@ class CitationSourceFulfillment:
                 finding_id,
                 status,
                 error=error,
+                source_search_version=(
+                    self._search_version if status == "failed" else None
+                ),
             )
 
 

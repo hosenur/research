@@ -1,6 +1,6 @@
 'use client'
 
-import { CameraIcon, FolderIcon, PaperClipIcon } from '@heroicons/react/24/solid'
+import { CameraIcon, FolderIcon, PaperclipIcon as PaperClipIcon } from '@phosphor-icons/react'
 import {
   FileTrigger as FileTriggerPrimitive,
   type FileTriggerProps as FileTriggerPrimitiveProps,

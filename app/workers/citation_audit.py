@@ -18,6 +18,7 @@ from app.config import (
 from app.database.session import get_session_factory
 from app.repositories.citation_audits import CitationAuditRepository
 from app.repositories.papers import PaperDocumentRepository
+from app.repositories.pipeline import PaperPipelineRepository
 from app.services.citation_audit import (
     AuditBatch,
     CitationAuditAnalyzer,
@@ -46,20 +47,36 @@ async def run() -> None:
         async def process(job: Job, _token: str) -> dict[str, int]:
             paper_id = str(job.data.get("paperId") or "")
             audit_id = str(job.data.get("auditId") or "")
+            section_ids = [
+                str(value) for value in (job.data.get("sectionIds") or []) if value
+            ]
             if not paper_id or not audit_id:
                 raise ValueError("The citation-audit job is missing paperId or auditId.")
             try:
-                return await audit_document(
+                async with get_session_factory()() as session:
+                    await PaperPipelineRepository(session).begin(
+                        paper_id, "missing-citation-review"
+                    )
+                result = await audit_document(
                     job,
                     paper_id,
                     audit_id,
                     analyzer,
                     reviewer,
                     source_queue,
+                    section_ids=section_ids,
                 )
+                async with get_session_factory()() as session:
+                    await PaperPipelineRepository(session).complete(
+                        paper_id, "missing-citation-review", progress=result
+                    )
+                return result
             except Exception as exc:
                 async with get_session_factory()() as session:
                     await CitationAuditRepository(session).record_error(audit_id, str(exc))
+                    await PaperPipelineRepository(session).fail(
+                        paper_id, "missing-citation-review", str(exc)
+                    )
                 raise
 
         worker = Worker(
@@ -83,10 +100,17 @@ async def audit_document(
     analyzer: CitationAuditAnalyzer,
     reviewer: CitationAuditAnalyzer,
     source_queue: Queue,
+    *,
+    section_ids: list[str] | None = None,
 ) -> dict[str, int]:
     session_factory = get_session_factory()
     async with session_factory() as session:
         paper = (await PaperDocumentRepository(session).get(paper_id)).paper
+    if section_ids:
+        allowed = set(section_ids)
+        paper = paper.model_copy(
+            update={"sections": [section for section in paper.sections if section.id in allowed]}
+        )
 
     sentences, priority_batches, discovery_batches = build_audit_batches(paper)
     async with session_factory() as session:
@@ -166,10 +190,11 @@ async def audit_document(
         audits = CitationAuditRepository(session)
         record = await audits.mark_completed(audit_id)
         progress = audits.progress(record)
+        finding_count = len(await audits.list_findings(audit_id))
         await job.updateProgress(progress.model_dump())
     await enqueue_pending_source_searches(source_queue, audit_id=audit_id)
     return {
-        "findings": record.revision - 1,
+        "findings": finding_count,
         "priorityBatches": progress.priority_completed,
         "discoveryBatches": progress.discovery_completed,
     }

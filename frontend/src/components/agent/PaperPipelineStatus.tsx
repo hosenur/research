@@ -1,9 +1,11 @@
 import {
+  ArrowClockwiseIcon,
   CheckCircleIcon as Complete,
-  ExclamationTriangleIcon as Warning,
-  ArrowPathIcon as Processing,
-} from '@heroicons/react/24/solid'
+  SpinnerGapIcon as Processing,
+  WarningIcon as Warning,
+} from '@phosphor-icons/react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { usePaperJobs } from '@/hooks/use-paper-jobs'
 
@@ -12,14 +14,19 @@ interface PaperPipelineStatusProps {
 }
 
 const labels: Record<string, string> = {
-  parse: 'Paper structure',
-  index: 'Paper index',
-  openalex: 'Reference enrichment',
-  'citation-audit': 'Citation audit',
+  upload: 'Upload secured',
+  'quick-extraction': 'Quick text extraction',
+  'quick-index': 'Quick read index',
+  'authoritative-parse': 'Paper structure',
+  'authoritative-index': 'Authoritative index',
+  'reference-resolution': 'Reference enrichment',
+  'missing-citation-review': 'Missing-work review',
+  'existing-citation-review': 'Claim/citation review',
+  export: 'Export',
 }
 
 export function PaperPipelineStatus({ paperId }: PaperPipelineStatusProps) {
-  const { data, error } = usePaperJobs(paperId)
+  const { data, error, retryStage, retrying } = usePaperJobs(paperId)
 
   return (
     <Card className="shrink-0 bg-overlay shadow-overlay">
@@ -28,14 +35,27 @@ export function PaperPipelineStatus({ paperId }: PaperPipelineStatusProps) {
         {error ? <p className="text-xs text-danger-subtle-fg">Status unavailable.</p> : (
           <ul className="space-y-2">
             {(data?.jobs ?? []).map((job) => (
-              <li className="flex items-center justify-between gap-2 text-xs" key={job.jobId}>
-                <span className="text-muted-fg">{labels[job.name] ?? job.name}</span>
-                <Badge intent={job.status === 'failed' ? 'danger' : job.status === 'completed' ? 'success' : 'info'}>
+              <li className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-xs" key={job.jobId}>
+                <span className="text-muted-fg">
+                  {labels[job.name] ?? job.name}
+                  {job.durationMs != null ? ` · ${(job.durationMs / 1000).toFixed(1)}s` : ''}
+                </span>
+                <div className="flex items-center gap-1">
+                <Badge intent={job.status === 'failed' ? 'danger' : job.status === 'completed' ? 'success' : job.status === 'skipped' ? 'warning' : 'info'}>
                   {job.status === 'running' || job.status === 'queued' ? <Processing className="animate-spin" data-slot="icon" /> : null}
                   {job.status === 'completed' ? <Complete data-slot="icon" /> : null}
                   {job.status === 'failed' ? <Warning data-slot="icon" /> : null}
                   {job.status.replace('_', ' ')}
                 </Badge>
+                {job.status === 'failed' ? (
+                  <Button aria-label={`Retry ${labels[job.name] ?? job.name}`} intent="plain" isDisabled={retrying} onPress={() => void retryStage(job.name)} size="sq-xs">
+                    <ArrowClockwiseIcon />
+                  </Button>
+                ) : null}
+                </div>
+                {typeof job.progress.reason === 'string' ? (
+                  <p className="col-span-2 text-[11px]/4 text-warning-subtle-fg">{job.progress.reason}</p>
+                ) : null}
               </li>
             ))}
             {!data?.jobs.length && !error ? <li className="text-xs text-muted-fg">No jobs have started.</li> : null}

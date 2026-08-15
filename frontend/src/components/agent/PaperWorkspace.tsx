@@ -1,12 +1,24 @@
-import type { CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import {
-  ArrowPathIcon as RotateCcw,
-  ArrowTopRightOnSquareIcon as ExternalLink,
-} from '@heroicons/react/24/solid'
+  ArrowCounterClockwiseIcon as RotateCcw,
+  ArrowSquareOutIcon as ExternalLink,
+  BooksIcon,
+  ChatCenteredTextIcon,
+  ClipboardTextIcon,
+  FilePdfIcon,
+  ExportIcon,
+  RowsIcon,
+} from '@phosphor-icons/react'
 import { AgentChat } from '@/components/agent/AgentChat'
-import { CitationAuditPanel } from '@/components/agent/CitationAuditPanel'
+import { ExportPanel } from '@/components/agent/ExportPanel'
 import { MatchedReferencesPanel } from '@/components/agent/MatchedReferencesPanel'
-import { PaperPipelineStatus } from '@/components/agent/PaperPipelineStatus'
+import {
+  PaperManuscript,
+  type ManuscriptFocus,
+} from '@/components/agent/PaperManuscript'
+import { ReviewInbox } from '@/components/agent/ReviewInbox'
+import { SectionReviewPanel } from '@/components/agent/SectionReviewPanel'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Sidebar,
@@ -14,11 +26,15 @@ import {
   SidebarInset,
   SidebarProvider,
 } from '@/components/ui/sidebar'
-import { useOpenAlexEnrichment } from '@/hooks/use-paper'
+import { Tab, TabList, TabPanel, Tabs } from '@/components/ui/tabs'
 import { useCitationAudit } from '@/hooks/use-citation-audit'
+import { useClaimCitationReview } from '@/hooks/use-claim-citation-review'
+import { useManuscriptEdits } from '@/hooks/use-manuscript-edits'
+import { useOpenAlexEnrichment } from '@/hooks/use-paper'
 import type { PaperJson } from '@/lib/paper'
 
 interface PaperWorkspaceProps {
+  documentRevision: number
   filename: string
   onReset: () => void
   paper: PaperJson
@@ -28,6 +44,7 @@ interface PaperWorkspaceProps {
 }
 
 export function PaperWorkspace({
+  documentRevision,
   filename,
   onReset,
   paper,
@@ -35,113 +52,150 @@ export function PaperWorkspace({
   paperRevision,
   pdfUrl,
 }: PaperWorkspaceProps) {
+  const [showPdf, setShowPdf] = useState(false)
+  const [manuscriptFocus, setManuscriptFocus] = useState<ManuscriptFocus | null>(null)
+  const focusTimer = useRef<number | null>(null)
   const { enrichment, paper: currentPaper } = useOpenAlexEnrichment({
-    initialRevision: paperRevision,
+    initialRevision: documentRevision,
     paper,
     paperId,
   })
   const citationAudit = useCitationAudit(paperId)
+  const claimCitationReview = useClaimCitationReview(paperId)
+  const manuscriptEdits = useManuscriptEdits(paperId)
+
+  useEffect(
+    () => () => {
+      if (focusTimer.current != null) window.clearTimeout(focusTimer.current)
+    },
+    [],
+  )
+
+  function focusManuscriptNode(
+    paragraphId: string,
+    startOffset?: number,
+    endOffset?: number,
+    text?: string,
+  ) {
+    setManuscriptFocus({ paragraphId, startOffset, endOffset, text, token: Date.now() })
+    const node = document.getElementById(`node-${paragraphId}`)
+    node?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    if (focusTimer.current != null) window.clearTimeout(focusTimer.current)
+    focusTimer.current = window.setTimeout(() => setManuscriptFocus(null), 4_100)
+  }
 
   return (
-    <section
-      aria-label="Research paper workspace"
-      className="workspace-enter min-h-dvh w-full bg-bg"
-    >
+    <section aria-label="Research paper workspace" className="workspace-enter min-h-dvh w-full bg-bg">
       <SidebarProvider
-        className="min-h-dvh max-lg:flex-col lg:h-dvh lg:overflow-hidden"
-        style={{ '--sidebar-width': 'clamp(18rem,31vw,40rem)' } as CSSProperties}
+        className="min-h-dvh lg:h-dvh lg:overflow-hidden"
+        style={{ '--sidebar-width': 'clamp(21rem,30vw,29rem)' } as CSSProperties}
       >
-        <Sidebar
-          aria-label="PDF preview"
-          className="max-lg:h-[40rem] max-lg:w-full lg:border-r lg:border-sidebar-border"
-          collapsible="none"
-          side="left"
-        >
-          <SidebarContent className="overflow-hidden p-2">
-            {pdfUrl ? (
-              <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-sidebar-border bg-muted">
-                <div className="absolute right-2 top-2 z-10 flex items-center gap-1.5 rounded-lg border border-border bg-overlay/95 p-1 shadow-sm backdrop-blur-sm">
-                  <Button
-                    aria-label="Open PDF in a new tab"
-                    intent="plain"
-                    isDisabled={!pdfUrl}
-                    onPress={() => window.open(pdfUrl, '_blank', 'noopener,noreferrer')}
-                    size="sq-xs"
-                  >
-                    <ExternalLink />
-                  </Button>
-                  <Button intent="outline" onPress={onReset} size="xs">
-                    <RotateCcw />
-                    New paper
-                  </Button>
-                </div>
+        <SidebarInset className="min-h-0 min-w-0">
+          <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border bg-overlay px-3 sm:px-4">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-fg">{filename}</p>
+              <p className="text-xs text-muted-fg">Authoritative manuscript · revision {paperRevision}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Badge intent="success">Review ready</Badge>
+              <Button
+                aria-label={showPdf ? 'Hide original PDF' : 'Show original PDF'}
+                intent={showPdf ? 'secondary' : 'outline'}
+                onPress={() => setShowPdf((current) => !current)}
+                size="sq-sm"
+              >
+                {showPdf ? <RowsIcon /> : <FilePdfIcon />}
+              </Button>
+              <Button
+                aria-label="Open PDF in a new tab"
+                intent="plain"
+                onPress={() => window.open(pdfUrl, '_blank', 'noopener,noreferrer')}
+                size="sq-sm"
+              >
+                <ExternalLink />
+              </Button>
+              <Button intent="outline" onPress={onReset} size="sm">
+                <RotateCcw />
+                New paper
+              </Button>
+            </div>
+          </header>
+
+          <div className={showPdf ? 'grid min-h-0 flex-1 lg:grid-cols-2' : 'min-h-0 flex-1'}>
+            <div className="h-full min-h-0 overflow-y-auto bg-bg">
+              <PaperManuscript focus={manuscriptFocus} paper={currentPaper} />
+            </div>
+            {showPdf ? (
+              <div className="min-h-[36rem] border-l border-border bg-muted p-2 lg:min-h-0">
                 <object
-                  aria-label={`Preview of ${filename}`}
-                  className="size-full min-h-0"
+                  aria-label={`Original PDF: ${filename}`}
+                  className="size-full overflow-hidden rounded-lg border border-border bg-overlay"
                   data={pdfUrl}
                   type="application/pdf"
                 >
                   <div className="grid size-full place-items-center p-8 text-center text-sm text-muted-fg">
-                    <div>
-                      <p>Your browser cannot render this PDF inline.</p>
-                      <Button
-                        className="mt-3"
-                        onPress={() => window.open(pdfUrl, '_blank')}
-                        size="sm"
-                      >
-                        <ExternalLink />
-                        Open PDF
-                      </Button>
-                    </div>
+                    <Button onPress={() => window.open(pdfUrl, '_blank')} size="sm">
+                      <ExternalLink />
+                      Open PDF
+                    </Button>
                   </div>
                 </object>
               </div>
             ) : null}
-          </SidebarContent>
-        </Sidebar>
+          </div>
+        </SidebarInset>
 
-        <SidebarInset className="min-h-0 max-lg:w-full">
-          <SidebarProvider
-            className="min-h-0 flex-1 max-lg:flex-col"
-            shortcut="j"
-            style={{ '--sidebar-width': '22rem' } as CSSProperties}
-          >
-            <div className="min-h-[40rem] min-w-0 flex-1 lg:min-h-0">
-              <AgentChat
-                className="h-full min-h-0"
-                paper={currentPaper}
-                paperId={paperId}
-              />
-            </div>
-
-            <Sidebar
-              aria-label="Paper review"
-              className="max-lg:h-auto max-lg:w-full lg:border-l lg:border-sidebar-border"
-              collapsible="none"
-              side="right"
-            >
-              <SidebarContent className="overflow-hidden p-2">
-                <div className="grid min-h-0 flex-1 gap-2 lg:grid-rows-[auto_minmax(0,1fr)_minmax(0,1fr)]">
-                  <PaperPipelineStatus paperId={paperId} />
-                  <CitationAuditPanel
-                    className="min-h-[20rem] lg:min-h-0"
-                    error={citationAudit.error}
-                    findings={citationAudit.findings}
-                    percentage={citationAudit.percentage}
-                    status={citationAudit.status}
-                    onCandidateDecision={citationAudit.decideCandidate}
-                    onFindingFeedback={citationAudit.reportFinding}
-                    decisionPending={citationAudit.decisionPending}
-                  />
-                  <MatchedReferencesPanel
-                    enrichment={enrichment}
-                    references={currentPaper.references}
+        <Sidebar
+          aria-label="Paper context"
+          className="max-lg:w-full lg:border-l lg:border-sidebar-border"
+          collapsible="none"
+          side="right"
+        >
+          <SidebarContent className="overflow-hidden p-2">
+            <Tabs className="min-h-0 flex-1 gap-2 self-stretch" defaultSelectedKey="review">
+              <TabList aria-label="Paper tools" className="shrink-0 px-2">
+                <Tab id="review"><ClipboardTextIcon />Review</Tab>
+                <Tab id="agent"><ChatCenteredTextIcon />Agent</Tab>
+                <Tab id="references"><BooksIcon />References</Tab>
+                <Tab id="export"><ExportIcon />Export</Tab>
+              </TabList>
+              <TabPanel className="min-h-0 overflow-hidden" id="review">
+                <div className="flex h-full min-h-0 flex-col">
+                {(currentPaper.extraction?.preflight.pageCount ?? 0) > 80 ? (
+                  <SectionReviewPanel paperId={paperId} sections={currentPaper.sections} />
+                ) : null}
+                <div className="min-h-0 flex-1">
+                  <ReviewInbox
+                    edits={manuscriptEdits}
+                    missing={citationAudit}
+                    existing={claimCitationReview.data}
+                    onFindingSelect={focusManuscriptNode}
+                    paper={currentPaper}
                   />
                 </div>
-              </SidebarContent>
-            </Sidebar>
-          </SidebarProvider>
-        </SidebarInset>
+                </div>
+              </TabPanel>
+              <TabPanel className="min-h-0 overflow-hidden" id="agent">
+                <AgentChat
+                  className="h-full min-h-0"
+                  edits={manuscriptEdits}
+                  paper={currentPaper}
+                  paperId={paperId}
+                  revision={paperRevision}
+                />
+              </TabPanel>
+              <TabPanel className="min-h-0 overflow-hidden" id="references">
+                <MatchedReferencesPanel
+                  enrichment={enrichment}
+                  references={currentPaper.references}
+                />
+              </TabPanel>
+              <TabPanel className="min-h-0 overflow-hidden" id="export">
+                <ExportPanel paperId={paperId} revision={paperRevision} />
+              </TabPanel>
+            </Tabs>
+          </SidebarContent>
+        </Sidebar>
       </SidebarProvider>
     </section>
   )

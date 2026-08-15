@@ -1,11 +1,11 @@
 import { useCallback } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import {
-  ArrowTopRightOnSquareIcon as ExternalLink,
+  ArrowSquareOutIcon as ExternalLink,
   CloudArrowUpIcon as UploadCloud,
-  DocumentTextIcon as FileText,
-  XMarkIcon as X,
-} from '@heroicons/react/24/solid'
+  FileTextIcon as FileText,
+  XIcon as X,
+} from '@phosphor-icons/react'
 import { Button } from '@/components/ui/button'
 import { DropZone } from '@/components/ui/drop-zone'
 import { FileTrigger } from '@/components/ui/file-trigger'
@@ -107,6 +107,9 @@ function PaperPage() {
           </h1>
           <p className="mt-3 text-sm/6 text-muted-fg">
             Upload one PDF up to 50 MB. Parsing starts automatically.
+          </p>
+          <p className="mt-2 text-xs/5 text-warning-subtle-fg">
+            Assessment environment: do not upload confidential or unpublished manuscripts.
           </p>
           <FileTrigger
             acceptedFileTypes={['application/pdf', '.pdf']}

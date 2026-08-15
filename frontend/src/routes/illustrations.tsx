@@ -1,18 +1,18 @@
 import { createFileRoute } from '@tanstack/react-router'
 import {
   ArrowDownIcon,
-  ArrowsPointingInIcon,
-  BeakerIcon,
+  ArrowsInIcon as ArrowsPointingInIcon,
   CheckCircleIcon,
-  CircleStackIcon,
   CloudArrowDownIcon,
-  CodeBracketSquareIcon,
+  CodeBlockIcon as CodeBracketSquareIcon,
   CubeTransparentIcon,
-  DocumentMagnifyingGlassIcon,
-  ExclamationTriangleIcon,
-  QueueListIcon,
-  ShareIcon,
-} from '@heroicons/react/24/solid'
+  DatabaseIcon as CircleStackIcon,
+  FileMagnifyingGlassIcon as DocumentMagnifyingGlassIcon,
+  FlaskIcon as BeakerIcon,
+  ListIcon as QueueListIcon,
+  ShareNetworkIcon as ShareIcon,
+  WarningIcon as ExclamationTriangleIcon,
+} from '@phosphor-icons/react'
 
 import { Badge } from '@/components/ui/badge'
 import {

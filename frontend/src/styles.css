@@ -1014,3 +1014,19 @@ a:hover .animated-underline::after {
     z-index: 9999;
   }
 }
+@keyframes review-text-highlight {
+  0%,
+  58% {
+    background-color: color-mix(in oklab, var(--color-warning) 32%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-warning) 14%, transparent);
+  }
+
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
+
+.review-text-highlight {
+  animation: review-text-highlight 4s ease-out forwards;
+}

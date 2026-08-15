@@ -15,7 +15,7 @@ class ChatWireMessage(ApiModel):
 
 
 class ChatForwardedProps(ApiModel):
-    paper: Paper
+    paper: Paper | None = None
 
 
 class PaperChatRequest(ApiModel):

@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import {
-  ArrowPathIcon as LoaderCircle,
   CheckIcon as Check,
   CloudArrowUpIcon as UploadCloud,
-  CodeBracketIcon as Braces,
-} from '@heroicons/react/24/solid'
+  CodeIcon as Braces,
+  SpinnerGapIcon as LoaderCircle,
+} from '@phosphor-icons/react'
 
 interface PaperProcessingStepsProps {
   uploadProgress: number

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import useSWR from 'swr'
+import useSWR, { useSWRConfig } from 'swr'
 import useSWRMutation from 'swr/mutation'
 
 export interface CitationAuditFinding {
@@ -62,6 +62,7 @@ interface CitationAuditResponse {
     discoveryCompleted: number
   }
   findings: CitationAuditFinding[]
+  dismissedFindings?: CitationAuditFinding[]
   sourceSearchPending: number
   error?: string | null
 }
@@ -85,6 +86,19 @@ async function decideJson<T>(url: string, { arg }: { arg: { findingId: string; c
   return response.json() as Promise<T>
 }
 
+async function removeSourceJson<T>(
+  url: string,
+  { arg }: { arg: { findingId: string; candidateId: string } },
+): Promise<T> {
+  const endpoint = `${url}/findings/${arg.findingId}/candidates/${arg.candidateId}/remove`
+  const response = await fetch(endpoint, { method: 'POST' })
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { detail?: string } | null
+    throw new Error(body?.detail ?? `The API returned HTTP ${response.status}.`)
+  }
+  return response.json() as Promise<T>
+}
+
 async function feedbackJson<T>(url: string, { arg }: { arg: { findingId: string; candidateId?: string; feedback: 'false_positive' | 'needs_review'; note?: string } }): Promise<T> {
   const response = await fetch(`${url}/findings/${arg.findingId}/feedback`, {
     method: 'POST',
@@ -100,11 +114,14 @@ async function feedbackJson<T>(url: string, { arg }: { arg: { findingId: string;
 }
 
 export function useCitationAudit(paperId: string) {
+  const { mutate: mutateGlobal } = useSWRConfig()
   const [revision, setRevision] = useState(1)
   const [findings, setFindings] = useState<CitationAuditFinding[]>([])
+  const [dismissedFindings, setDismissedFindings] = useState<CitationAuditFinding[]>([])
   const url = `/api/papers/${paperId}/citation-audit`
   const start = useSWRMutation<{ auditId: string }>(url, postJson)
   const decision = useSWRMutation(url, decideJson)
+  const removal = useSWRMutation(url, removeSourceJson)
   const feedback = useSWRMutation(url, feedbackJson)
   const startedRef = useRef(false)
 
@@ -132,12 +149,21 @@ export function useCitationAudit(paperId: string) {
   useEffect(() => {
     const payload = poll.data
     if (!payload) return
+    const nextDismissedFindings = payload.dismissedFindings ?? []
+    const dismissedIds = new Set(nextDismissedFindings.map((finding) => finding.id))
+    setDismissedFindings(nextDismissedFindings)
     if (payload.findings.length) {
       setFindings((current) => {
         const merged = new Map(current.map((finding) => [finding.id, finding]))
         for (const finding of payload.findings) merged.set(finding.id, finding)
-        return [...merged.values()].sort((left, right) => left.revision - right.revision)
+        return [...merged.values()]
+          .filter((finding) => !dismissedIds.has(finding.id))
+          .sort((left, right) => left.revision - right.revision)
       })
+    } else if (dismissedIds.size) {
+      setFindings((current) =>
+        current.filter((finding) => !dismissedIds.has(finding.id)),
+      )
     }
     if (payload.revision > revision) setRevision(payload.revision)
   }, [poll.data, revision])
@@ -163,15 +189,64 @@ export function useCitationAudit(paperId: string) {
         (start.error instanceof Error ? start.error.message : null) ??
         (poll.error instanceof Error ? poll.error.message : null),
       findings,
+      dismissedFindings,
       percentage,
       progress,
       status: failed ? ('failed' as const) : (payload?.status ?? 'queued'),
-      decideCandidate: (findingId: string, candidateId: string, value: 'accepted' | 'rejected') =>
-        decision.trigger({ findingId, candidateId, decision: value }).then(() => poll.mutate()),
-      reportFinding: (findingId: string, value: 'false_positive' | 'needs_review') =>
-        feedback.trigger({ findingId, feedback: value }).then(() => poll.mutate()),
-      decisionPending: decision.isMutating || feedback.isMutating,
+      decideCandidate: async (findingId: string, candidateId: string, value: 'accepted' | 'rejected') => {
+        const result = await decision.trigger({ findingId, candidateId, decision: value }) as {
+          editProposal?: unknown
+        }
+        if (result.editProposal) {
+          await mutateGlobal(
+            `/api/papers/${paperId}/edits/latest`,
+            result.editProposal,
+            { revalidate: false },
+          )
+        }
+        await poll.mutate()
+      },
+      removeCandidateSource: async (findingId: string, candidateId: string) => {
+        const editProposal = await removal.trigger({ findingId, candidateId })
+        await mutateGlobal(
+          `/api/papers/${paperId}/edits/latest`,
+          editProposal,
+          { revalidate: false },
+        )
+        return editProposal
+      },
+      reportFinding: async (
+        findingId: string,
+        value: 'false_positive' | 'needs_review',
+      ) => {
+        await feedback.trigger({ findingId, feedback: value })
+        if (value === 'false_positive') {
+          const dismissed = findings.find((finding) => finding.id === findingId)
+          setFindings((current) => current.filter((finding) => finding.id !== findingId))
+          if (dismissed) {
+            setDismissedFindings((current) =>
+              [...current.filter((finding) => finding.id !== findingId), dismissed].sort(
+                (left, right) => left.revision - right.revision,
+              ),
+            )
+          }
+        } else {
+          const restored = dismissedFindings.find((finding) => finding.id === findingId)
+          setDismissedFindings((current) =>
+            current.filter((finding) => finding.id !== findingId),
+          )
+          if (restored) {
+            setFindings((current) =>
+              [...current.filter((finding) => finding.id !== findingId), restored].sort(
+                (left, right) => left.revision - right.revision,
+              ),
+            )
+          }
+        }
+        await poll.mutate()
+      },
+      decisionPending: decision.isMutating || removal.isMutating || feedback.isMutating,
     }),
-    [decision.isMutating, failed, feedback, findings, payload?.error, payload?.status, percentage, poll.error, progress, start.error],
+    [decision.isMutating, dismissedFindings, failed, feedback, findings, payload?.error, payload?.status, percentage, poll.error, progress, removal.isMutating, start.error],
   )
 }

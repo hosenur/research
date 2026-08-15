@@ -9,7 +9,7 @@
 - Keep `frontend/components.json`, the registry-generated `frontend/src/lib/primitive.ts`, and registry-generated component source under version control.
 - Preserve component provenance and bundled third-party licenses. Do not copy licensed fonts or assets from Leaf.
 - Semantic HTML for document content and layout is allowed. Interactive controls must use the installed component system.
-- Use `@heroicons/react/24/solid` for product icons. Do not add Lucide, Iconoir, or another icon library.
+- Use `@phosphor-icons/react` for product icons. Do not add Heroicons, Lucide, Iconoir, or another icon library.
 - Consult `https://intentui.com/llms.txt` and `https://www.beautifului.dev/` when choosing components or patterns.
 
 ## Validation policy

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from typing import Annotated
 from urllib.parse import quote
 
@@ -9,20 +10,30 @@ from app.config import MAX_PDF_SIZE, MAX_TEI_SIZE, claim_audit_model
 from app.dependencies import (
     get_citation_audit_queue,
     get_citation_audit_repository,
+    get_claim_citation_review_repository,
+    get_claim_citation_review_queue,
+    get_paper_export_repository,
+    get_paper_export_queue,
     get_extraction_artifact_store,
     get_missing_work_finder,
+    get_manuscript_revision_service,
     get_openalex_enricher,
     get_openalex_queue,
     get_paper_document_repository,
     get_paper_index_queue,
     get_paper_ingestion_service,
     get_paper_parse_queue,
+    get_paper_pipeline_repository,
+    get_paper_quick_read_queue,
     get_paper_service,
     get_source_search_queue,
 )
 from app.repositories.artifacts import PaperArtifactStore
 from app.repositories.citation_audits import CitationAuditRepository
+from app.repositories.claim_citations import ClaimCitationReviewRepository
+from app.repositories.exports import PaperExportRepository, project_export
 from app.repositories.papers import PaperDocumentRepository
+from app.repositories.pipeline import PaperPipelineRepository
 from app.schemas.documents import (
     CitationAuditJob,
     CitationAuditStatus,
@@ -33,20 +44,36 @@ from app.schemas.documents import (
     OpenAlexEnrichmentStatus,
     PaperDocument,
     PaperLifecycle,
+    PaperPipeline,
     PaperJobStatus,
     PaperJobsStatus,
     CitationSourceDecisionRequest,
+    ClaimCitationReviewStatus,
+    EditApprovalRequest,
+    EditCommandRequest,
+    EditProposal,
+    ManuscriptRevisionDetail,
+    ManuscriptRevisionList,
+    RevisionRevertRequest,
+    CitationStyleRequest,
+    CitationStyleStatus,
+    PaperExport,
+    PaperExportRequest,
+    SectionReviewRequest,
 )
 from app.schemas.paper import MissingWorkReport, Paper
 from app.services.missing_works import MissingWorkFinder
 from app.services.openalex import OpenAlexEnricher
 from app.services.paper_ingestion import PaperIngestionService, parse_job_id
+from app.services.paper_ingestion import quick_read_job_id
 from app.services.paper_pipeline import (
     citation_audit_job_id,
+    claim_citation_review_job_id,
     openalex_job_id,
     paper_index_job_id,
 )
 from app.services.papers import PaperService, normalize_tei
+from app.services.manuscript_revisions import ManuscriptRevisionService, RevisionConflictError
 from app.workers.source_search import enqueue_pending_source_searches
 
 router = APIRouter(prefix="/papers", tags=["papers"])
@@ -59,10 +86,22 @@ MissingWorks = Annotated[MissingWorkFinder, Depends(get_missing_work_finder)]
 ArtifactStore = Annotated[PaperArtifactStore, Depends(get_extraction_artifact_store)]
 PaperDocuments = Annotated[PaperDocumentRepository, Depends(get_paper_document_repository)]
 PaperIngestion = Annotated[PaperIngestionService, Depends(get_paper_ingestion_service)]
+PaperPipelineRepositoryDependency = Annotated[
+    PaperPipelineRepository, Depends(get_paper_pipeline_repository)
+]
+ClaimCitationReviews = Annotated[
+    ClaimCitationReviewRepository, Depends(get_claim_citation_review_repository)
+]
+ManuscriptRevisions = Annotated[
+    ManuscriptRevisionService, Depends(get_manuscript_revision_service)
+]
 OpenAlexQueue = Annotated[Queue, Depends(get_openalex_queue)]
 CitationAudits = Annotated[CitationAuditRepository, Depends(get_citation_audit_repository)]
 CitationAuditQueue = Annotated[Queue, Depends(get_citation_audit_queue)]
 SourceSearchQueue = Annotated[Queue, Depends(get_source_search_queue)]
+PaperExports = Annotated[PaperExportRepository, Depends(get_paper_export_repository)]
+PaperExportQueue = Annotated[Queue, Depends(get_paper_export_queue)]
+ClaimCitationReviewQueue = Annotated[Queue, Depends(get_claim_citation_review_queue)]
 
 
 @router.post("", response_model=PaperLifecycle, status_code=status.HTTP_202_ACCEPTED)
@@ -80,13 +119,50 @@ async def decide_citation_candidate(
     payload: CitationSourceDecisionRequest,
     documents: PaperDocuments,
     audits: CitationAudits,
-) -> dict[str, str]:
+    revisions: ManuscriptRevisions,
+) -> dict[str, str | EditProposal | None]:
     await documents.get(paper_id)
     try:
         candidate = await audits.decide_candidate(paper_id, finding_id, candidate_id, payload.decision)
     except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    proposal = None
+    if payload.decision == "accepted":
+        try:
+            proposal = await revisions.propose_verified_source(
+                paper_id, finding_id, candidate_id
+            )
+        except (LookupError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "candidateId": candidate.id,
+        "decision": candidate.decision,
+        "editProposal": proposal,
+    }
+
+
+@router.post(
+    "/{paper_id}/citation-audit/findings/{finding_id}/candidates/{candidate_id}/remove",
+    response_model=EditProposal,
+)
+async def propose_citation_candidate_removal(
+    paper_id: str,
+    finding_id: str,
+    candidate_id: str,
+    documents: PaperDocuments,
+    revisions: ManuscriptRevisions,
+) -> EditProposal:
+    await documents.get(paper_id)
+    try:
+        return await revisions.propose_verified_source_removal(
+            paper_id,
+            finding_id,
+            candidate_id,
+        )
+    except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"candidateId": candidate.id, "decision": candidate.decision}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post(
@@ -100,7 +176,7 @@ async def record_citation_feedback(
     documents: PaperDocuments,
     audits: CitationAudits,
 ) -> dict[str, str | None]:
-    """Record review feedback without changing the current candidate state."""
+    """Record review feedback and dismiss false-positive audit findings."""
     await documents.get(paper_id)
     try:
         record = await audits.record_feedback(
@@ -113,7 +189,12 @@ async def record_citation_feedback(
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"feedbackId": record.id, "feedback": record.feedback, "candidateId": record.candidate_id}
+    return {
+        "feedbackId": record.id,
+        "findingId": finding_id,
+        "feedback": record.feedback,
+        "candidateId": record.candidate_id,
+    }
 
 
 @router.get("/{paper_id}/citation-audit/feedback", response_model=CitationFeedbackSummary)
@@ -171,7 +252,7 @@ async def index_existing_paper(
         await job.remove()
         job = None
     if job is None:
-        await index_queue.add(
+        job = await index_queue.add(
             "index-paper",
             {"paperId": paper_id},
             {
@@ -181,7 +262,7 @@ async def index_existing_paper(
                 "removeOnFail": False,
             },
         )
-    return {"paperId": paper_id, "status": "queued"}
+    return {"paperId": paper_id, "status": map_job_status(await job.getState())}
 
 
 @router.get("/{paper_id}", response_model=PaperLifecycle)
@@ -190,6 +271,392 @@ async def get_paper(paper_id: str, documents: PaperDocuments) -> PaperLifecycle:
     return await documents.get_lifecycle(paper_id)
 
 
+@router.get("/{paper_id}/pipeline", response_model=PaperPipeline)
+async def get_paper_pipeline(
+    paper_id: str,
+    documents: PaperDocuments,
+    pipeline: PaperPipelineRepositoryDependency,
+) -> PaperPipeline:
+    await documents.get_lifecycle(paper_id)
+    return PaperPipeline(paper_id=paper_id, stages=await pipeline.list(paper_id))
+
+
+@router.post("/{paper_id}/pipeline/{stage}/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_paper_pipeline_stage(
+    paper_id: str,
+    stage: str,
+    documents: PaperDocuments,
+    pipeline: PaperPipelineRepositoryDependency,
+    audits: CitationAudits,
+    parse_queue: Annotated[Queue, Depends(get_paper_parse_queue)],
+    quick_queue: Annotated[Queue, Depends(get_paper_quick_read_queue)],
+    index_queue: Annotated[Queue, Depends(get_paper_index_queue)],
+    openalex_queue: OpenAlexQueue,
+    citation_queue: CitationAuditQueue,
+    existing_queue: ClaimCitationReviewQueue,
+) -> dict[str, str]:
+    await documents.get_lifecycle(paper_id)
+    current = next((item for item in await pipeline.list(paper_id) if item.name == stage), None)
+    if current is None:
+        raise HTTPException(status_code=404, detail="The pipeline stage was not found.")
+    if current.status == "skipped":
+        raise HTTPException(
+            status_code=409,
+            detail="This whole-document stage was intentionally skipped. Start a section-scoped review instead.",
+        )
+    if current.status != "failed":
+        raise HTTPException(status_code=409, detail="Only a failed stage can be retried.")
+    audit = await audits.create_or_get(paper_id, claim_audit_model())
+    choices = {
+        "quick-extraction": (quick_queue, "quick-read-paper", {"paperId": paper_id}, quick_read_job_id(paper_id)),
+        "quick-index": (quick_queue, "quick-read-paper", {"paperId": paper_id}, quick_read_job_id(paper_id)),
+        "authoritative-parse": (parse_queue, "parse-paper", {"paperId": paper_id}, parse_job_id(paper_id)),
+        "authoritative-index": (index_queue, "index-paper", {"paperId": paper_id}, paper_index_job_id(paper_id)),
+        "reference-resolution": (openalex_queue, "enrich-openalex", {"paperId": paper_id}, openalex_job_id(paper_id)),
+        "missing-citation-review": (citation_queue, "audit-missing-citations", {"paperId": paper_id, "auditId": audit.id}, citation_audit_job_id(paper_id)),
+        "existing-citation-review": (existing_queue, "review-existing-citations", {"paperId": paper_id}, claim_citation_review_job_id(paper_id)),
+    }
+    selected = choices.get(stage)
+    if selected is None:
+        raise HTTPException(status_code=422, detail="This stage does not support direct retry.")
+    queue, name, data, job_id = selected
+    existing = await Job.fromId(queue, job_id)
+    if existing is not None:
+        await existing.remove()
+    await queue.add(
+        name,
+        data,
+        {
+            "jobId": job_id,
+            "attempts": 4,
+            "backoff": {"type": "exponential", "delay": 2_000},
+            "removeOnComplete": False,
+            "removeOnFail": False,
+        },
+    )
+    await pipeline.queued(paper_id, stage, progress={"manualRetry": True})
+    return {"paperId": paper_id, "stage": stage, "status": "queued"}
+
+
+@router.get(
+    "/{paper_id}/claim-citation-review",
+    response_model=ClaimCitationReviewStatus,
+)
+async def get_claim_citation_review(
+    paper_id: str,
+    documents: PaperDocuments,
+    pipeline: PaperPipelineRepositoryDependency,
+    reviews: ClaimCitationReviews,
+) -> ClaimCitationReviewStatus:
+    await documents.get_lifecycle(paper_id)
+    stages = await pipeline.list(paper_id)
+    stage = next(
+        (item for item in stages if item.name == "existing-citation-review"), None
+    )
+    findings = await reviews.list(paper_id)
+    reported_total = (
+        int(stage.progress.get("pairs", len(findings))) if stage else len(findings)
+    )
+    return ClaimCitationReviewStatus(
+        paper_id=paper_id,
+        status=(stage.status if stage and stage.status != "skipped" else "completed"),  # type: ignore[arg-type]
+        findings=findings,
+        total=max(reported_total, len(findings)),
+        completed=len(findings),
+        error=stage.error if stage else None,
+    )
+
+
+@router.post("/{paper_id}/section-review", status_code=status.HTTP_202_ACCEPTED)
+async def start_section_scoped_review(
+    paper_id: str,
+    payload: SectionReviewRequest,
+    documents: PaperDocuments,
+    audits: CitationAudits,
+    citation_queue: CitationAuditQueue,
+    existing_queue: ClaimCitationReviewQueue,
+    pipeline: PaperPipelineRepositoryDependency,
+) -> dict[str, object]:
+    document = await documents.get(paper_id)
+    available = {section.id for section in document.paper.sections}
+    section_ids = list(dict.fromkeys(payload.section_ids))
+    unknown = [section_id for section_id in section_ids if section_id not in available]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown section IDs: {', '.join(unknown)}")
+    scope = hashlib.sha256("|".join(section_ids).encode()).hexdigest()[:12]
+    audit = await audits.create_or_get(paper_id, claim_audit_model())
+    jobs = [
+        (
+            citation_queue,
+            "audit-missing-citations",
+            {"paperId": paper_id, "auditId": audit.id, "sectionIds": section_ids},
+            f"citation-audit-{paper_id}-sections-{scope}",
+        ),
+        (
+            existing_queue,
+            "review-existing-citations",
+            {"paperId": paper_id, "sectionIds": section_ids},
+            f"claim-citation-review-{paper_id}-sections-{scope}",
+        ),
+    ]
+    job_statuses: list[str] = []
+    for queue, name, data, job_id in jobs:
+        job = await Job.fromId(queue, job_id)
+        if job is not None and await job.getState() == "failed":
+            await job.remove()
+            job = None
+        if job is None:
+            job = await queue.add(
+                name,
+                data,
+                {
+                    "jobId": job_id,
+                    "attempts": 4,
+                    "backoff": {"type": "exponential", "delay": 2_000},
+                    "removeOnComplete": False,
+                    "removeOnFail": False,
+                },
+            )
+        job_statuses.append(map_job_status(await job.getState()))
+    if all(job_status == "completed" for job_status in job_statuses):
+        request_status = "completed"
+    elif any(job_status == "running" for job_status in job_statuses):
+        request_status = "running"
+    else:
+        request_status = "queued"
+    if request_status == "queued":
+        progress = {"sectionIds": section_ids, "scope": "section"}
+        await pipeline.queued(paper_id, "missing-citation-review", progress=progress)
+        await pipeline.queued(paper_id, "existing-citation-review", progress=progress)
+    return {
+        "paperId": paper_id,
+        "sectionIds": section_ids,
+        "status": request_status,
+    }
+
+
+@router.post("/{paper_id}/edits", response_model=EditProposal)
+async def plan_manuscript_edit(
+    paper_id: str,
+    payload: EditCommandRequest,
+    documents: PaperDocuments,
+    revisions: ManuscriptRevisions,
+) -> EditProposal:
+    await documents.get(paper_id)
+    try:
+        return await revisions.plan(
+            paper_id,
+            payload.command,
+            base_revision=payload.base_revision,
+        )
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/{paper_id}/edits/latest", response_model=EditProposal | None)
+async def get_latest_manuscript_edit(
+    paper_id: str,
+    revisions: ManuscriptRevisions,
+) -> EditProposal | None:
+    return await revisions.latest_proposal(paper_id)
+
+
+@router.get("/{paper_id}/edits/{proposal_id}", response_model=EditProposal)
+async def get_manuscript_edit(
+    paper_id: str,
+    proposal_id: str,
+    revisions: ManuscriptRevisions,
+) -> EditProposal:
+    try:
+        return await revisions.proposal(paper_id, proposal_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{paper_id}/edits/{proposal_id}/approve", response_model=EditProposal)
+async def approve_manuscript_edit(
+    paper_id: str,
+    proposal_id: str,
+    payload: EditApprovalRequest,
+    revisions: ManuscriptRevisions,
+) -> EditProposal:
+    try:
+        return await revisions.approve(paper_id, proposal_id, payload.operation_ids)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/{paper_id}/edits/{proposal_id}/discard", response_model=EditProposal)
+async def discard_manuscript_edit(
+    paper_id: str,
+    proposal_id: str,
+    revisions: ManuscriptRevisions,
+) -> EditProposal:
+    try:
+        return await revisions.discard(paper_id, proposal_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/{paper_id}/revisions", response_model=ManuscriptRevisionList)
+async def list_manuscript_revisions(
+    paper_id: str,
+    revisions: ManuscriptRevisions,
+) -> ManuscriptRevisionList:
+    try:
+        return await revisions.revisions(paper_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{paper_id}/revisions/{revision}", response_model=ManuscriptRevisionDetail)
+async def get_manuscript_revision(
+    paper_id: str,
+    revision: int,
+    revisions: ManuscriptRevisions,
+) -> ManuscriptRevisionDetail:
+    try:
+        return await revisions.revision(paper_id, revision)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{paper_id}/revisions/{revision}/restore", response_model=ManuscriptRevisionDetail)
+async def restore_manuscript_revision(
+    paper_id: str,
+    revision: int,
+    revisions: ManuscriptRevisions,
+) -> ManuscriptRevisionDetail:
+    try:
+        return await revisions.restore(paper_id, revision)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{paper_id}/revisions/{revision}/revert", response_model=ManuscriptRevisionDetail)
+async def selectively_revert_manuscript_revision(
+    paper_id: str,
+    revision: int,
+    payload: RevisionRevertRequest,
+    revisions: ManuscriptRevisions,
+) -> ManuscriptRevisionDetail:
+    try:
+        return await revisions.revert_operations(
+            paper_id, revision, payload.operation_ids
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/{paper_id}/citation-style", response_model=CitationStyleStatus)
+async def get_citation_style(
+    paper_id: str,
+    documents: PaperDocuments,
+    exports: PaperExports,
+) -> CitationStyleStatus:
+    document = await documents.get(paper_id)
+    detected = (
+        document.paper.citation_style_detection.family
+        if document.paper.citation_style_detection
+        else document.paper.citation_style
+    )
+    return await exports.style_status(paper_id, detected)
+
+
+@router.put("/{paper_id}/citation-style", response_model=CitationStyleStatus)
+async def confirm_citation_style(
+    paper_id: str,
+    payload: CitationStyleRequest,
+    documents: PaperDocuments,
+    exports: PaperExports,
+) -> CitationStyleStatus:
+    from citeproc_styles import get_style_filepath
+
+    document = await documents.get(paper_id)
+    try:
+        get_style_filepath(payload.style_id)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="That CSL style is unavailable.") from exc
+    detected = (
+        document.paper.citation_style_detection.family
+        if document.paper.citation_style_detection
+        else document.paper.citation_style
+    )
+    return await exports.confirm_style(paper_id, payload.style_id, detected)
+
+
+@router.post("/{paper_id}/exports", response_model=PaperExport, status_code=status.HTTP_202_ACCEPTED)
+async def create_paper_export(
+    paper_id: str,
+    payload: PaperExportRequest,
+    revisions: ManuscriptRevisions,
+    exports: PaperExports,
+    queue: PaperExportQueue,
+    pipeline: PaperPipelineRepositoryDependency,
+) -> PaperExport:
+    try:
+        await revisions.revision(paper_id, payload.revision)
+        record = await exports.create(paper_id, payload.revision)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await queue.add(
+        "export-paper",
+        {"paperId": paper_id, "exportId": record.id},
+        {
+            "jobId": f"paper-export-{record.id}",
+            "attempts": 3,
+            "backoff": {"type": "exponential", "delay": 2_000},
+            "removeOnComplete": False,
+            "removeOnFail": False,
+        },
+    )
+    await pipeline.queued(paper_id, "export", revision=payload.revision)
+    return project_export(record)
+
+
+@router.get("/{paper_id}/exports/{export_id}", response_model=PaperExport)
+async def get_paper_export(
+    paper_id: str,
+    export_id: str,
+    exports: PaperExports,
+) -> PaperExport:
+    try:
+        return project_export(await exports.get(paper_id, export_id))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{paper_id}/exports/{export_id}/download/{format}")
+async def download_paper_export(
+    paper_id: str,
+    export_id: str,
+    format: str,
+    exports: PaperExports,
+    artifacts: ArtifactStore,
+) -> Response:
+    if format not in {"latex", "pdf"}:
+        raise HTTPException(status_code=404, detail="The export format was not found.")
+    record = await exports.get(paper_id, export_id)
+    object_key = record.latex_object_key if format == "latex" else record.pdf_object_key
+    if not object_key or record.status != "completed":
+        raise HTTPException(status_code=409, detail="The export is not ready for download.")
+    content = await asyncio.to_thread(artifacts.read_export, object_key)
+    filename = f"paper-r{record.manuscript_revision}.{'zip' if format == 'latex' else 'pdf'}"
+    return Response(
+        content=content,
+        media_type="application/zip" if format == "latex" else "application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 @router.get("/{paper_id}/source")
 async def get_paper_source(
     paper_id: str,
@@ -217,10 +684,12 @@ async def get_paper_jobs(
     audit_queue: CitationAuditQueue,
     index_queue: Annotated[Queue, Depends(get_paper_index_queue)],
     parse_queue: Annotated[Queue, Depends(get_paper_parse_queue)],
+    quick_read_queue: Annotated[Queue, Depends(get_paper_quick_read_queue)],
 ) -> PaperJobsStatus:
     """Expose a single operational view of the long-running paper pipeline."""
     await documents.get_lifecycle(paper_id)
     jobs = [
+        ("quick-read", quick_read_job_id(paper_id), quick_read_queue),
         ("parse", parse_job_id(paper_id), parse_queue),
         ("index", paper_index_job_id(paper_id), index_queue),
         ("openalex", openalex_job_id(paper_id), openalex_queue),
@@ -233,13 +702,14 @@ async def get_paper_jobs(
             statuses.append(PaperJobStatus(name=name, job_id=job_id, status="not_started"))
             continue
         progress = job.progress if isinstance(job.progress, dict) else {}
+        job_status = map_job_status(await job.getState())
         statuses.append(
             PaperJobStatus(
                 name=name,
                 job_id=job_id,
-                status=map_job_status(await job.getState()),
+                status=job_status,
                 progress=progress,
-                error=job.failedReason,
+                error=job.failedReason if job_status == "failed" else None,
             )
         )
     return PaperJobsStatus(paper_id=paper_id, jobs=statuses)
@@ -341,14 +811,15 @@ async def get_openalex_enrichment(
             **progress_payload,
         }
     )
+    job_status = map_job_status(await job.getState())
     return OpenAlexEnrichmentStatus(
         job_id=job_id,
         paper_id=paper_id,
-        status=map_job_status(await job.getState()),
+        status=job_status,
         revision=document.revision,
         reference_updates=updates,
         progress=progress,
-        error=job.failedReason,
+        error=job.failedReason if job_status == "failed" else None,
     )
 
 
@@ -449,6 +920,7 @@ async def get_citation_audit(
             audit.id,
             after_revision=after_revision,
         ),
+        dismissed_findings=await audits.list_dismissed_findings(audit.id),
         source_search_pending=await audits.source_search_pending_count(audit.id),
         error=(job.failedReason if job else audit.error) if job_status == "failed" else None,
     )

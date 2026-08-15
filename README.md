@@ -5,6 +5,14 @@ document, a PostgreSQL-backed BullMQ worker for asynchronous OpenAlex
 enrichment, and a Vite React frontend using TanStack Router, TanStack AI, SWR,
 and Tailwind CSS.
 
+Implementation and submission evidence:
+
+- [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — completed phase plan and acceptance criteria
+- [`COMPLETION_AUDIT.md`](COMPLETION_AUDIT.md) — runtime-backed pass/fail audit for all six phases
+- [`SYSTEM_DESIGN.md`](SYSTEM_DESIGN.md) — architecture, algorithms, safety invariants, recovery, and scaling
+- [`SMOKE_RESULTS.md`](SMOKE_RESULTS.md) — real all-endpoint runtime results and timings
+- [`SUBMISSION.md`](SUBMISSION.md) — assessment coverage and recording checklist
+
 ## Start the stack
 
 Docker and the Docker Compose plugin are required. From this directory, run:
@@ -13,15 +21,19 @@ Docker and the Docker Compose plugin are required. From this directory, run:
 docker compose up --build
 ```
 
-The first run downloads the configured extraction image, so it can take a few
-minutes. Compose starts PostgreSQL, runs Alembic migrations, and then starts the
-API and the continuously running OpenAlex worker. Once the stack is ready:
+The first run downloads the configured extraction and object-storage images,
+so it can take a few minutes. Compose starts PostgreSQL, persistent MinIO,
+GROBID, runs Alembic migrations, and then starts the API and all queue workers.
+Once the stack is ready:
 
 - FastAPI hello route: <http://rig:3333/hello>
-- PDF parsing route: `POST http://rig:3333/papers/parse`
+- Durable PDF ingestion: `POST http://rig:3333/papers`
 - Parsed paper route: `GET http://rig:3333/papers/{paperId}`
+- Persisted source PDF: `GET http://rig:3333/papers/{paperId}/source`
 - OpenAlex job route: `POST/GET http://rig:3333/papers/{paperId}/enrichments/openalex`
 - Interactive API docs: <http://rig:3333/docs>
+- MinIO API (localhost only): <http://127.0.0.1:9000>
+- MinIO console (localhost only): <http://127.0.0.1:9001>
 
 Verify the API:
 
@@ -35,19 +47,20 @@ Expected response:
 {"message":"Hello, World!"}
 ```
 
-Upload a paper through FastAPI and save the returned document envelope:
+Upload a paper through FastAPI and save the returned lifecycle envelope:
 
 ```bash
 curl --form file=@sample_papers/attention-is-all-you-need.pdf \
-  http://rig:3333/papers/parse \
+  http://rig:3333/papers \
   --output paper.json
 ```
 
-The endpoint accepts PDFs up to 50 MB, forwards them to the full-document
-parser, stores the normalized Paper JSON in PostgreSQL, and immediately returns
-an envelope containing `id`, `revision`, and `paper`. The API container
-reaches GROBID at the internal `http://grobid:8070` address configured through
-the `GROBID_URL` environment variable.
+The endpoint accepts PDFs up to 50 MB, stores the immutable source in MinIO,
+creates a lifecycle row in PostgreSQL, enqueues parsing, and immediately returns
+`202` with `id`, `status`, `revision`, and `sourceUrl`. Poll the returned paper
+route until `status` is `ready`; `paper` is nullable while the worker calls
+GROBID. The compatibility `POST /papers/parse` route remains synchronous for
+older clients.
 
 ### PDF extraction and recovery
 
@@ -63,7 +76,7 @@ The PDF boundary is an explicit, auditable pipeline:
    `article/light-ref`). A paper with citation markers but no bibliography uses
    `/api/processReferences` and merges the recovered list into the source TEI.
 5. The normalized Paper receives an extraction quality report. The untouched
-   final TEI is stored under `/data/extractions` and can be downloaded from
+   final TEI is stored in MinIO (or the filesystem development adapter) and can be downloaded from
    `GET /papers/artifacts/{teiArtifactId}/tei`.
 
 GROBID consolidation remains disabled: external identity and metadata are
@@ -212,9 +225,12 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
 The key stays on the FastAPI service and is never exposed to the browser.
-`OPENAI_MODEL` is configurable; the default is `gpt-5.4-nano`. The current
-agent can inspect sections and parsed references. Confirmed missing-citation
-findings are handed to a separate background literature-search queue.
+`OPENAI_MODEL` is configurable; the default is `gpt-5.4-nano`. One Agent
+conversation supports both grounded questions and proposed edits. It can inspect
+sections, references, audit results, every immutable manuscript revision, and
+exact historical snapshots. Edit commands appear as validated inline diffs and
+change nothing until approval. Confirmed missing-citation findings are handed to
+a separate background literature-search queue.
 
 ### Audit likely missing citations
 

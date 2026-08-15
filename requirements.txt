@@ -7,4 +7,6 @@ pgvector==0.4.1
 alembic==1.16.5
 bullmq[postgres]==3.0.4
 minio==7.2.20
+citeproc-py==0.10.2
+citeproc-py-styles==0.1.5
 uvicorn[standard]==0.51.0

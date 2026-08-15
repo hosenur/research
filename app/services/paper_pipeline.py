@@ -4,6 +4,7 @@ from bullmq import Job, Queue
 
 from app.config import claim_audit_model
 from app.repositories.citation_audits import CitationAuditRepository
+from app.repositories.pipeline import PaperPipelineRepository
 
 
 async def enqueue_parsed_paper_pipeline(
@@ -13,6 +14,8 @@ async def enqueue_parsed_paper_pipeline(
     index_queue: Queue,
     openalex_queue: Queue,
     citation_audit_queue: Queue,
+    pipeline: PaperPipelineRepository,
+    page_count: int | None = None,
 ) -> None:
     """Idempotently fan a parsed paper out to every currently implemented stage."""
     audit = await audits.create_or_get(paper_id, claim_audit_model())
@@ -23,6 +26,7 @@ async def enqueue_parsed_paper_pipeline(
         paper_index_job_id(paper_id),
         attempts=3,
     )
+    await pipeline.queued(paper_id, "authoritative-index")
     await _add_once(
         openalex_queue,
         "enrich-openalex",
@@ -30,13 +34,24 @@ async def enqueue_parsed_paper_pipeline(
         openalex_job_id(paper_id),
         attempts=4,
     )
-    await _add_once(
-        citation_audit_queue,
-        "audit-missing-citations",
-        {"paperId": paper_id, "auditId": audit.id},
-        citation_audit_job_id(paper_id),
-        attempts=4,
-    )
+    await pipeline.queued(paper_id, "reference-resolution")
+    if page_count and page_count > 80:
+        reason = "Whole-document automatic review is limited to 80 pages. Choose up to five sections to review."
+        await pipeline.skip(
+            paper_id, "missing-citation-review", reason, progress={"pageCount": page_count}
+        )
+        await pipeline.skip(
+            paper_id, "existing-citation-review", reason, progress={"pageCount": page_count}
+        )
+    else:
+        await _add_once(
+            citation_audit_queue,
+            "audit-missing-citations",
+            {"paperId": paper_id, "auditId": audit.id},
+            citation_audit_job_id(paper_id),
+            attempts=4,
+        )
+        await pipeline.queued(paper_id, "missing-citation-review")
 
 
 async def _add_once(
@@ -72,3 +87,7 @@ def openalex_job_id(paper_id: str) -> str:
 
 def citation_audit_job_id(paper_id: str) -> str:
     return f"citation-audit-{paper_id}"
+
+
+def claim_citation_review_job_id(paper_id: str) -> str:
+    return f"claim-citation-review-{paper_id}"

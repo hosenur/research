@@ -10,7 +10,7 @@ const INITIAL_MESSAGE: UIMessage = {
     {
       type: 'text',
       content:
-        'I can help you inspect this paper, trace citations, and review missing support. Ask about a claim, reference, or section to begin.',
+        'I can inspect this paper, answer questions, and prepare safe edits. Any change appears as a diff for your approval before it is applied.',
     },
   ],
 }

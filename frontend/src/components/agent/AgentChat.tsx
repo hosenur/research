@@ -1,23 +1,33 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react'
 import type { UIMessage } from '@tanstack/ai'
 import {
-  ArrowPathIcon as Retry,
+  ArrowClockwiseIcon as Retry,
   ArrowUpIcon as ArrowUp,
-  MagnifyingGlassIcon as Search,
   StopIcon as Stop,
-} from '@heroicons/react/24/solid'
+} from '@phosphor-icons/react'
 import { Button } from '@/components/ui/button'
 import LoadingState from '@/components/ui/LoadingState'
 import { Textarea } from '@/components/ui/textarea'
 import { UiProvider } from '@/components/ui/UiProvider'
+import { useManuscriptEdits, type ManuscriptEditFlow } from '@/hooks/use-manuscript-edits'
 import { usePaperChat } from '@/hooks/use-paper-chat'
 import { twMerge } from 'tailwind-merge'
 import { ChatMarkdown } from './ChatMarkdown'
+import { EditProposalThread } from './EditCommandPanel'
+
+type PaperChatFlow = ReturnType<typeof usePaperChat>
 
 const SUGGESTIONS = [
   'Check the claims in the introduction',
   'Explain citation [12]',
   'Summarize the methods and findings',
+  'Make the abstract a little shorter',
 ]
 
 function messageText(message: UIMessage) {
@@ -29,23 +39,77 @@ function messageText(message: UIMessage) {
 
 export function AgentChat({
   className,
+  edits,
   paper,
   paperId,
+  revision,
 }: {
   className?: string
+  edits?: ManuscriptEditFlow
   paper: unknown
   paperId?: string
+  revision?: number
+}) {
+  const chat = usePaperChat(paper, paperId)
+  if (edits) {
+    return <AgentConversation chat={chat} className={className} edits={edits} />
+  }
+  if (paperId && revision) {
+    return (
+      <EditableAgentConversation
+        chat={chat}
+        className={className}
+        paperId={paperId}
+      />
+    )
+  }
+  return <AgentConversation chat={chat} className={className} />
+}
+
+function EditableAgentConversation({
+  chat,
+  className,
+  paperId,
+}: {
+  chat: PaperChatFlow
+  className?: string
+  paperId: string
+}) {
+  const edits = useManuscriptEdits(paperId)
+  return <AgentConversation chat={chat} className={className} edits={edits} />
+}
+
+function AgentConversation({
+  chat,
+  className,
+  edits,
+}: {
+  chat: PaperChatFlow
+  className?: string
+  edits?: ManuscriptEditFlow
 }) {
   const [draft, setDraft] = useState('')
-  const { error, isLoading, messages, reload, sendMessage, stop } = usePaperChat(paper, paperId)
+  const { error, isLoading, messages, reload, sendMessage, stop } = chat
   const threadRef = useRef<HTMLDivElement>(null)
+  const wasLoading = useRef(false)
+  const refreshProposal = edits?.refreshProposal
+  const citationProposal =
+    edits?.proposal?.command.startsWith('Use verified source ') === true ||
+    edits?.proposal?.command.startsWith('Remove verified source ') === true
+
+  useEffect(() => {
+    if (wasLoading.current && !isLoading && refreshProposal) {
+      void refreshProposal()
+    }
+    wasLoading.current = isLoading
+  }, [isLoading, refreshProposal])
 
   useEffect(() => {
     threadRef.current?.scrollTo({
       top: threadRef.current.scrollHeight,
       behavior: 'smooth',
     })
-  }, [messages, isLoading, error])
+  }, [messages, isLoading, edits?.proposal, error])
 
   function submit(text = draft) {
     const prompt = text.trim()
@@ -81,32 +145,23 @@ export function AgentChat({
           ref={threadRef}
         >
           <div className="flex min-h-full flex-col justify-end gap-5">
-            {messages.map((message, index) => (
-              <div
-                className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}
+            {messages.map((message, position) => (
+              <Message
+                isStreaming={isLoading && position === messages.length - 1}
                 key={message.id}
-              >
-                <div
-                  className={
-                    message.role === 'user'
-                      ? 'max-w-[85%] whitespace-pre-wrap rounded-[10px] bg-secondary px-3.5 py-2.5 text-sm/6 text-fg shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--fg)_3%,transparent)]'
-                      : 'max-w-[92%] min-w-0 text-fg'
-                  }
-                >
-                  {message.role === 'user' ? (
-                    messageText(message)
-                  ) : (
-                    <ChatMarkdown streaming={isLoading && index === messages.length - 1}>
-                      {messageText(message)}
-                    </ChatMarkdown>
-                  )}
-                </div>
-              </div>
+                message={message}
+              />
             ))}
+
+            {edits?.proposal && !citationProposal ? (
+              <div className="min-w-0 max-w-full">
+                <EditProposalThread edits={edits} />
+              </div>
+            ) : null}
 
             {isLoading ? (
               <UiProvider>
-                <LoadingState label="Reading the paper" variant="Drive" />
+                <LoadingState label="Working on your request" variant="Drive" />
               </UiProvider>
             ) : null}
 
@@ -123,7 +178,7 @@ export function AgentChat({
         </div>
 
         <div className="border-t border-border bg-bg/80 px-3 py-3">
-          {messages.length === 1 ? (
+          {messages.length === 1 && !edits?.proposal ? (
             <div className="no-bar mb-2 flex gap-2 overflow-x-auto pb-1">
               {SUGGESTIONS.map((suggestion) => (
                 <Button
@@ -133,7 +188,6 @@ export function AgentChat({
                   onPress={() => submit(suggestion)}
                   size="xs"
                 >
-                  <Search />
                   {suggestion}
                 </Button>
               ))}
@@ -145,16 +199,15 @@ export function AgentChat({
             onSubmit={handleSubmit}
           >
             <Textarea
-              aria-label="Ask the paper agent"
+              aria-label="Message the paper agent"
               className="max-h-40 min-h-20 rounded-none border-0 bg-transparent px-3.5 pt-3 shadow-none focus:border-0 focus:ring-0 enabled:hover:border-0"
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask about a claim, citation, or section…"
+              placeholder="Ask about the paper or describe a change…"
               rows={2}
               value={draft}
             />
-            <div className="flex items-center justify-between px-3 pb-3">
-              <span className="text-xs text-muted-fg">Enter to send · Shift+Enter for a new line</span>
+            <div className="flex items-center justify-end px-3 pb-3">
               <Button
                 aria-label={isLoading ? 'Stop response' : 'Send message'}
                 isDisabled={!isLoading && !draft.trim()}
@@ -166,8 +219,37 @@ export function AgentChat({
               </Button>
             </div>
           </form>
+          <p className="mt-1.5 px-1 text-[11px]/4 text-muted-fg">
+            One agent answers questions and proposes edits. Nothing changes until you approve.
+          </p>
         </div>
       </div>
     </section>
+  )
+}
+
+function Message({
+  isStreaming,
+  message,
+}: {
+  isStreaming: boolean
+  message: UIMessage
+}) {
+  return (
+    <div className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
+      <div
+        className={
+          message.role === 'user'
+            ? 'max-w-[85%] whitespace-pre-wrap rounded-[10px] bg-secondary px-3.5 py-2.5 text-sm/6 text-fg shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--fg)_3%,transparent)]'
+            : 'max-w-[92%] min-w-0 text-fg'
+        }
+      >
+        {message.role === 'user' ? (
+          messageText(message)
+        ) : (
+          <ChatMarkdown streaming={isStreaming}>{messageText(message)}</ChatMarkdown>
+        )}
+      </div>
+    </div>
   )
 }

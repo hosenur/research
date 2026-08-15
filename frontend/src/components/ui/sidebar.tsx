@@ -1,6 +1,6 @@
 'use client'
 
-import { ChevronDownIcon } from '@heroicons/react/20/solid'
+import { CaretDownIcon as ChevronDownIcon } from '@phosphor-icons/react'
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { type ButtonProps, Button as ButtonPrimitive } from 'react-aria-components/Button'
 import { composeRenderProps } from 'react-aria-components/composeRenderProps'

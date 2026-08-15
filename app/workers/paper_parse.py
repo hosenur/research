@@ -17,10 +17,12 @@ from app.config import (
     ocr_enabled,
 )
 from app.database.session import get_session_factory
+from app.database.models import PaperRecord
 from app.repositories.artifacts import create_paper_artifact_store
 from app.repositories.citation_audits import CitationAuditRepository
 from app.repositories.grobid import GrobidRepository
 from app.repositories.papers import PaperDocumentRepository
+from app.repositories.pipeline import PaperPipelineRepository
 from app.services.paper_pipeline import enqueue_parsed_paper_pipeline
 from app.services.papers import PaperService
 from app.services.pdf_preflight import PdfPreflightService
@@ -48,9 +50,13 @@ async def run() -> None:
             paper_id = str(job.data.get("paperId") or "")
             if not paper_id:
                 raise ValueError("The paper-parse job is missing paperId.")
+            page_count: int | None = None
             try:
                 async with get_session_factory()() as session:
                     documents = PaperDocumentRepository(session)
+                    await PaperPipelineRepository(session).begin(
+                        paper_id, "authoritative-parse"
+                    )
                     lifecycle = await documents.begin_parse(paper_id)
                     filename, object_key = await documents.source(paper_id)
 
@@ -59,8 +65,24 @@ async def run() -> None:
                     content = await asyncio.to_thread(artifacts.read_source, object_key)
                     await job.updateProgress({"stage": "grobid"})
                     paper = await service.parse_pdf(content, filename)
+                    page_count = paper.extraction.preflight.page_count if paper.extraction else None
                     async with get_session_factory()() as session:
                         await PaperDocumentRepository(session).complete_parse(paper_id, paper)
+                        await PaperPipelineRepository(session).complete(
+                            paper_id,
+                            "authoritative-parse",
+                            progress={
+                                "sections": len(paper.sections),
+                                "references": len(paper.references),
+                            },
+                        )
+                else:
+                    async with get_session_factory()() as session:
+                        record = await session.get(PaperRecord, paper_id)
+                        page_count = record.page_count if record else None
+                        await PaperPipelineRepository(session).complete(
+                            paper_id, "authoritative-parse"
+                        )
 
                 await job.updateProgress({"stage": "starting-review"})
                 async with get_session_factory()() as session:
@@ -70,11 +92,16 @@ async def run() -> None:
                         index_queue=index_queue,
                         openalex_queue=openalex_queue,
                         citation_audit_queue=audit_queue,
+                        pipeline=PaperPipelineRepository(session),
+                        page_count=page_count,
                     )
                 return {"paperId": paper_id, "stage": "ready"}
             except Exception as exc:
                 async with get_session_factory()() as session:
                     await PaperDocumentRepository(session).fail_parse(paper_id, str(exc))
+                    await PaperPipelineRepository(session).fail(
+                        paper_id, "authoritative-parse", str(exc)
+                    )
                 raise
 
         worker = Worker(

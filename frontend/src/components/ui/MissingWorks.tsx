@@ -1,4 +1,4 @@
-import { ArrowUpRightIcon as ArrowUpRight } from '@heroicons/react/24/solid'
+import { ArrowUpRightIcon as ArrowUpRight } from '@phosphor-icons/react'
 
 export interface MissingWorkJson {
   sectionId: string

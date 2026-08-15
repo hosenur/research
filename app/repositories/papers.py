@@ -8,10 +8,11 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import PaperRecord, ReferenceEnrichmentRecord
+from app.database.models import ManuscriptRevisionRecord, PaperRecord, ReferenceEnrichmentRecord
 from app.exceptions import PaperDocumentNotFoundError, PaperDocumentNotReadyError
 from app.schemas.documents import PaperDocument, PaperLifecycle, ReferenceEnrichmentUpdate
 from app.schemas.paper import OpenAlexWork, Paper, Reference
+from app.services.paper_index import current_index_kind
 
 
 class PaperDocumentRepository:
@@ -36,6 +37,22 @@ class PaperDocumentRepository:
             revision=1,
         )
         self._session.add(record)
+        # The revision references the newly-created paper. Flush the parent first;
+        # these models intentionally have no ORM relationship for SQLAlchemy to
+        # infer insert ordering from.
+        await self._session.flush()
+        self._session.add(
+            ManuscriptRevisionRecord(
+                id=str(uuid.uuid4()),
+                paper_id=record.id,
+                revision=1,
+                parent_revision=None,
+                paper_json=payload,
+                content_hash=content_hash,
+                source="parse",
+                summary="Authoritative parse",
+            )
+        )
         await self._session.commit()
         return PaperDocument(id=record.id, revision=record.revision, paper=paper)
 
@@ -65,8 +82,9 @@ class PaperDocumentRepository:
         paper: Paper | None = None
         if record.paper_json is not None:
             enrichments = await self.list_enrichments(paper_id)
-            paper = self._merge(Paper.model_validate(record.paper_json), enrichments)
-        return self._lifecycle(record, paper=paper)
+            paper = self._merge(await self._current_paper(record), enrichments)
+        retrieval_mode = await current_index_kind(self._session, paper_id)
+        return self._lifecycle(record, paper=paper, retrieval_mode=retrieval_mode)
 
     async def begin_parse(self, paper_id: str) -> PaperLifecycle:
         record = await self._get_record_for_update(paper_id)
@@ -83,6 +101,31 @@ class PaperDocumentRepository:
         record.status = "ready"
         record.parse_error = None
         record.parse_completed_at = datetime.now(UTC)
+        record.page_count = (
+            paper.extraction.preflight.page_count if paper.extraction else None
+        )
+        existing_revision = await self._session.scalar(
+            select(ManuscriptRevisionRecord).where(
+                ManuscriptRevisionRecord.paper_id == paper_id,
+                ManuscriptRevisionRecord.revision == 1,
+            )
+        )
+        if existing_revision is None:
+            payload = paper.model_dump(mode="json", by_alias=True)
+            self._session.add(
+                ManuscriptRevisionRecord(
+                    id=str(uuid.uuid4()),
+                    paper_id=paper_id,
+                    revision=1,
+                    parent_revision=None,
+                    paper_json=payload,
+                    content_hash=hashlib.sha256(
+                        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest(),
+                    source="parse",
+                    summary="Authoritative parse",
+                )
+            )
         await self._session.commit()
         return PaperDocument(id=record.id, revision=record.revision, paper=paper)
 
@@ -106,7 +149,7 @@ class PaperDocumentRepository:
                 "The paper is still being parsed. Retry when its lifecycle is ready."
             )
         enrichments = await self.list_enrichments(paper_id)
-        paper = self._merge(Paper.model_validate(record.paper_json), enrichments)
+        paper = self._merge(await self._current_paper(record), enrichments)
         return PaperDocument(id=record.id, revision=record.revision, paper=paper)
 
     async def list_enrichments(self, paper_id: str) -> list[ReferenceEnrichmentRecord]:
@@ -187,16 +230,35 @@ class PaperDocumentRepository:
             raise PaperDocumentNotFoundError("The parsed paper was not found.")
         return record
 
+    async def _current_paper(self, record: PaperRecord) -> Paper:
+        if record.manuscript_revision <= 1:
+            return Paper.model_validate(record.paper_json)
+        revision = await self._session.scalar(
+            select(ManuscriptRevisionRecord).where(
+                ManuscriptRevisionRecord.paper_id == record.id,
+                ManuscriptRevisionRecord.revision == record.manuscript_revision,
+            )
+        )
+        payload = revision.paper_json if revision else record.paper_json
+        return Paper.model_validate(payload)
+
     @staticmethod
-    def _lifecycle(record: PaperRecord, *, paper: Paper | None = None) -> PaperLifecycle:
+    def _lifecycle(
+        record: PaperRecord,
+        *,
+        paper: Paper | None = None,
+        retrieval_mode: str = "unavailable",
+    ) -> PaperLifecycle:
         return PaperLifecycle(
             id=record.id,
             filename=record.filename,
             status=record.status,  # type: ignore[arg-type]
             revision=record.revision,
+            manuscript_revision=record.manuscript_revision,
             paper=paper,
             error=record.parse_error,
             source_url=f"/papers/{record.id}/source",
+            retrieval_mode=retrieval_mode,  # type: ignore[arg-type]
         )
 
     @staticmethod
