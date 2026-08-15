@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -152,18 +152,14 @@ class ScholarlyWorkRepository:
     ) -> str:
         title_normalized = normalize_title(work.title)
         canonical_key = canonical_work_key(work)
-        identity_conditions = [ScholarlyWorkRecord.canonical_key == canonical_key]
+        identity_conditions = [
+            ScholarlyWorkRecord.canonical_key == canonical_key,
+            ScholarlyWorkRecord.provider_ids[work.provider].astext == work.provider_id,
+        ]
         if work.doi:
             identity_conditions.append(ScholarlyWorkRecord.doi == work.doi)
         if work.arxiv_id:
             identity_conditions.append(ScholarlyWorkRecord.arxiv_id == work.arxiv_id)
-        if title_normalized:
-            identity_conditions.append(
-                and_(
-                    ScholarlyWorkRecord.title_normalized == title_normalized,
-                    ScholarlyWorkRecord.year == work.year,
-                )
-            )
         existing = await session.scalar(
             select(ScholarlyWorkRecord).where(or_(*identity_conditions)).limit(1)
         )
@@ -318,10 +314,8 @@ def canonical_work_key(work: ScholarlyWorkData) -> str:
         return "doi:" + hashlib.sha256(work.doi.lower().encode()).hexdigest()
     if work.arxiv_id:
         return f"arxiv:{work.arxiv_id.lower()}"
-    seed = f"{normalize_title(work.title)}|{work.year or ''}"
-    if seed.strip("|"):
-        return "title:" + hashlib.sha256(seed.encode()).hexdigest()
-    return f"{work.provider}:{work.provider_id}"[:128]
+    seed = f"{work.provider}|{work.provider_id}"
+    return "provider:" + hashlib.sha256(seed.encode()).hexdigest()
 
 
 def normalize_doi(value: Any) -> str | None:
@@ -368,6 +362,52 @@ def lexical_score(query: str, record: ScholarlyWorkRecord) -> float:
     title_overlap = len(tokens & title_tokens) / max(len(title_tokens), 1)
     abstract_overlap = len(tokens & abstract_tokens) / len(tokens)
     return round(min(1.0, title_overlap * 0.65 + abstract_overlap * 0.35), 4)
+
+
+def scholarly_work_provenance(record: ScholarlyWorkRecord) -> dict[str, Any]:
+    """Project canonical fields back to the independent provider payloads."""
+    provider_works = [
+        work
+        for provider, payload in record.provider_payloads.items()
+        for work in works_from_response(provider, payload)
+        if work.provider_id == record.provider_ids.get(provider)
+    ]
+    abstract_providers = sorted(
+        work.provider
+        for work in provider_works
+        if work.abstract
+        and record.abstract
+        and " ".join(work.abstract.split()) == " ".join(record.abstract.split())
+    )
+    identifiers: dict[str, dict[str, Any]] = {}
+    for name, value, attribute in (
+        ("doi", record.doi, "doi"),
+        ("arxiv", record.arxiv_id, "arxiv_id"),
+    ):
+        if not value:
+            continue
+        suppliers = sorted(
+            work.provider
+            for work in provider_works
+            if getattr(work, attribute) == value
+        )
+        identifiers[name] = {"value": value, "providers": suppliers}
+    return {
+        "abstractProviders": abstract_providers,
+        "identifiers": identifiers,
+        "providerMatches": {
+            work.provider: {
+                "providerId": work.provider_id,
+                "title": work.title,
+                "year": work.year,
+                "abstract": work.abstract,
+                "doi": work.doi,
+                "arxivId": work.arxiv_id,
+                "sourceUrl": work.landing_page_url,
+            }
+            for work in provider_works
+        },
+    }
 
 
 def as_int(value: Any) -> int | None:

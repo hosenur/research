@@ -18,7 +18,7 @@ export interface PaperReferenceJson {
     DOI?: string | null
   } | null
   openalex?: OpenAlexWorkJson | null
-  openalexStatus?: 'matched' | 'unmatched' | 'error' | 'skipped' | null
+  openalexStatus?: 'matched' | 'unmatched' | 'ambiguous' | 'error' | 'skipped' | null
   openalexError?: string | null
   [key: string]: unknown
 }

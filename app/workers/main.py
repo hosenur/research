@@ -1,7 +1,7 @@
 import asyncio
 
 from app.workers.citation_audit import run as run_citation_audit
-from app.workers.openalex import run as run_openalex
+from app.workers.reference_evidence import run as run_reference_evidence
 from app.workers.source_search import run as run_source_search
 from app.workers.paper_index import run as run_paper_index
 from app.workers.paper_parse import run as run_paper_parse
@@ -16,7 +16,7 @@ async def run() -> None:
         run_quick_read(),
         run_existing_citations(),
         run_paper_export(),
-        run_openalex(),
+        run_reference_evidence(),
         run_citation_audit(),
         run_source_search(),
         run_paper_index(),

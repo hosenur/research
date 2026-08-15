@@ -18,7 +18,7 @@ from app.dependencies import (
     get_missing_work_finder,
     get_manuscript_revision_service,
     get_openalex_enricher,
-    get_openalex_queue,
+    get_reference_evidence_queue,
     get_paper_document_repository,
     get_paper_index_queue,
     get_paper_ingestion_service,
@@ -40,8 +40,8 @@ from app.schemas.documents import (
     CitationFeedbackRequest,
     CitationFeedbackSummary,
     EnrichmentProgress,
-    OpenAlexEnrichmentJob,
-    OpenAlexEnrichmentStatus,
+    ReferenceEvidenceJob,
+    ReferenceEvidenceStatus,
     PaperDocument,
     PaperLifecycle,
     PaperPipeline,
@@ -69,7 +69,7 @@ from app.services.paper_ingestion import quick_read_job_id
 from app.services.paper_pipeline import (
     citation_audit_job_id,
     claim_citation_review_job_id,
-    openalex_job_id,
+    reference_evidence_job_id,
     paper_index_job_id,
 )
 from app.services.papers import PaperService, normalize_tei
@@ -96,7 +96,7 @@ ClaimCitationReviews = Annotated[
 ManuscriptRevisions = Annotated[
     ManuscriptRevisionService, Depends(get_manuscript_revision_service)
 ]
-OpenAlexQueue = Annotated[Queue, Depends(get_openalex_queue)]
+ReferenceEvidenceQueue = Annotated[Queue, Depends(get_reference_evidence_queue)]
 CitationAudits = Annotated[CitationAuditRepository, Depends(get_citation_audit_repository)]
 CitationAuditQueue = Annotated[Queue, Depends(get_citation_audit_queue)]
 SourceSearchQueue = Annotated[Queue, Depends(get_source_search_queue)]
@@ -300,7 +300,7 @@ async def retry_paper_pipeline_stage(
     parse_queue: Annotated[Queue, Depends(get_paper_parse_queue)],
     quick_queue: Annotated[Queue, Depends(get_paper_quick_read_queue)],
     index_queue: Annotated[Queue, Depends(get_paper_index_queue)],
-    openalex_queue: OpenAlexQueue,
+    reference_evidence_queue: ReferenceEvidenceQueue,
     citation_queue: CitationAuditQueue,
     existing_queue: ClaimCitationReviewQueue,
 ) -> dict[str, str]:
@@ -321,7 +321,12 @@ async def retry_paper_pipeline_stage(
         "quick-index": (quick_queue, "quick-read-paper", {"paperId": paper_id}, quick_read_job_id(paper_id)),
         "authoritative-parse": (parse_queue, "parse-paper", {"paperId": paper_id}, parse_job_id(paper_id)),
         "authoritative-index": (index_queue, "index-paper", {"paperId": paper_id}, paper_index_job_id(paper_id)),
-        "reference-resolution": (openalex_queue, "enrich-openalex", {"paperId": paper_id}, openalex_job_id(paper_id)),
+        "reference-resolution": (
+            reference_evidence_queue,
+            "resolve-reference-evidence",
+            {"paperId": paper_id},
+            reference_evidence_job_id(paper_id),
+        ),
         "missing-citation-review": (citation_queue, "audit-missing-citations", {"paperId": paper_id, "auditId": audit.id}, citation_audit_job_id(paper_id)),
         "existing-citation-review": (existing_queue, "review-existing-citations", {"paperId": paper_id}, claim_citation_review_job_id(paper_id)),
     }
@@ -712,7 +717,7 @@ async def get_paper_source(
 async def get_paper_jobs(
     paper_id: str,
     documents: PaperDocuments,
-    openalex_queue: OpenAlexQueue,
+    reference_evidence_queue: ReferenceEvidenceQueue,
     audit_queue: CitationAuditQueue,
     index_queue: Annotated[Queue, Depends(get_paper_index_queue)],
     parse_queue: Annotated[Queue, Depends(get_paper_parse_queue)],
@@ -724,7 +729,11 @@ async def get_paper_jobs(
         ("quick-read", quick_read_job_id(paper_id), quick_read_queue),
         ("parse", parse_job_id(paper_id), parse_queue),
         ("index", paper_index_job_id(paper_id), index_queue),
-        ("openalex", openalex_job_id(paper_id), openalex_queue),
+        (
+            "reference-evidence",
+            reference_evidence_job_id(paper_id),
+            reference_evidence_queue,
+        ),
         ("citation-audit", citation_audit_job_id(paper_id), audit_queue),
     ]
     statuses: list[PaperJobStatus] = []
@@ -779,22 +788,22 @@ async def find_missing_works(paper: Paper, finder: MissingWorks) -> MissingWorkR
 
 
 @router.post(
-    "/{paper_id}/enrichments/openalex",
-    response_model=OpenAlexEnrichmentJob,
+    "/{paper_id}/enrichments/reference-evidence",
+    response_model=ReferenceEvidenceJob,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def start_openalex_enrichment(
+async def start_reference_evidence(
     paper_id: str,
     documents: PaperDocuments,
-    queue: OpenAlexQueue,
-) -> OpenAlexEnrichmentJob:
-    """Idempotently enqueue OpenAlex matching after the parse response has returned."""
+    queue: ReferenceEvidenceQueue,
+) -> ReferenceEvidenceJob:
+    """Idempotently enqueue dual-provider evidence resolution after parsing."""
     await documents.get(paper_id)
-    job_id = openalex_job_id(paper_id)
+    job_id = reference_evidence_job_id(paper_id)
     job = await Job.fromId(queue, job_id)
     if job is None:
         job = await queue.add(
-            "enrich-openalex",
+            "resolve-reference-evidence",
             {"paperId": paper_id},
             {
                 "jobId": job_id,
@@ -804,7 +813,7 @@ async def start_openalex_enrichment(
                 "removeOnFail": False,
             },
         )
-    return OpenAlexEnrichmentJob(
+    return ReferenceEvidenceJob(
         job_id=job_id,
         paper_id=paper_id,
         status=map_job_status(await job.getState()),
@@ -812,22 +821,22 @@ async def start_openalex_enrichment(
 
 
 @router.get(
-    "/{paper_id}/enrichments/openalex",
-    response_model=OpenAlexEnrichmentStatus,
+    "/{paper_id}/enrichments/reference-evidence",
+    response_model=ReferenceEvidenceStatus,
 )
-async def get_openalex_enrichment(
+async def get_reference_evidence(
     paper_id: str,
     documents: PaperDocuments,
-    queue: OpenAlexQueue,
+    queue: ReferenceEvidenceQueue,
     after_revision: Annotated[int, Query(alias="afterRevision", ge=0)] = 0,
-) -> OpenAlexEnrichmentStatus:
+) -> ReferenceEvidenceStatus:
     """Poll BullMQ state and receive only reference updates after a document revision."""
     document = await documents.get(paper_id)
-    job_id = openalex_job_id(paper_id)
+    job_id = reference_evidence_job_id(paper_id)
     job = await Job.fromId(queue, job_id)
     updates = await documents.list_updates(paper_id, after_revision=after_revision)
     if job is None:
-        return OpenAlexEnrichmentStatus(
+        return ReferenceEvidenceStatus(
             job_id=job_id,
             paper_id=paper_id,
             status="not_started",
@@ -844,7 +853,7 @@ async def get_openalex_enrichment(
         }
     )
     job_status = map_job_status(await job.getState())
-    return OpenAlexEnrichmentStatus(
+    return ReferenceEvidenceStatus(
         job_id=job_id,
         paper_id=paper_id,
         status=job_status,

@@ -179,7 +179,7 @@ class SectionReviewRequest(ApiModel):
 class ReferenceEnrichmentUpdate(ApiModel):
     reference_id: str
     provider: Literal["openalex"] = "openalex"
-    status: Literal["matched", "unmatched", "error", "skipped"]
+    status: Literal["matched", "unmatched", "ambiguous", "error", "skipped"]
     openalex: OpenAlexWork | None = None
     error: str | None = None
     revision: int = Field(ge=1)
@@ -203,13 +203,13 @@ EnrichmentJobStatus = Literal[
 ]
 
 
-class OpenAlexEnrichmentJob(ApiModel):
+class ReferenceEvidenceJob(ApiModel):
     job_id: str
     paper_id: str
     status: EnrichmentJobStatus
 
 
-class OpenAlexEnrichmentStatus(OpenAlexEnrichmentJob):
+class ReferenceEvidenceStatus(ReferenceEvidenceJob):
     progress: EnrichmentProgress = Field(default_factory=EnrichmentProgress)
     revision: int = Field(ge=1)
     reference_updates: list[ReferenceEnrichmentUpdate] = Field(default_factory=list)
@@ -237,6 +237,7 @@ class CitationSourceWork(ApiModel):
     cited_by_count: int | None = None
     providers: list[Literal["openalex", "semantic-scholar"]] = Field(default_factory=list)
     provider_ids: dict[str, str] = Field(default_factory=dict)
+    provenance: dict = Field(default_factory=dict)
 
 
 class CitationSourceCandidate(ApiModel):

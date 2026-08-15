@@ -20,6 +20,7 @@ from app.database.models import (
 )
 from app.repositories.citation_audits import CitationAuditRepository
 from app.repositories.papers import PaperDocumentRepository
+from app.repositories.scholarly_works import scholarly_work_provenance
 from app.schemas.documents import EditProposal
 from app.schemas.paper import Paper
 from app.services.manuscript_revisions import (
@@ -478,6 +479,7 @@ class CitationActionService:
             "doi": work.doi,
             "arxivId": work.arxiv_id,
             "providers": sorted(work.provider_ids),
+            "provenance": scholarly_work_provenance(work),
             "rank": candidate.rank,
             "score": candidate.score,
             "reason": candidate.reason,

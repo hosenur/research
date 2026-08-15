@@ -40,7 +40,7 @@ const legacyStageNames: Record<string, string> = {
   'quick-read': 'quick-extraction',
   parse: 'authoritative-parse',
   index: 'authoritative-index',
-  openalex: 'reference-resolution',
+  'reference-evidence': 'reference-resolution',
   'citation-audit': 'missing-citation-review',
 }
 

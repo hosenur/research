@@ -328,7 +328,9 @@ class Reference(ApiModel):
     raw_fields: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     openalex: OpenAlexWork | None = None
-    openalex_status: Literal["matched", "unmatched", "error", "skipped"] | None = None
+    openalex_status: Literal[
+        "matched", "unmatched", "ambiguous", "error", "skipped"
+    ] | None = None
     openalex_error: str | None = None
     source: ExtractionPointer | None = None
 

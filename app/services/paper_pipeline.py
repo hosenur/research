@@ -12,7 +12,7 @@ async def enqueue_parsed_paper_pipeline(
     *,
     audits: CitationAuditRepository,
     index_queue: Queue,
-    openalex_queue: Queue,
+    reference_evidence_queue: Queue,
     citation_audit_queue: Queue,
     pipeline: PaperPipelineRepository,
     page_count: int | None = None,
@@ -28,10 +28,10 @@ async def enqueue_parsed_paper_pipeline(
     )
     await pipeline.queued(paper_id, "authoritative-index")
     await _add_once(
-        openalex_queue,
-        "enrich-openalex",
+        reference_evidence_queue,
+        "resolve-reference-evidence",
         {"paperId": paper_id},
-        openalex_job_id(paper_id),
+        reference_evidence_job_id(paper_id),
         attempts=4,
     )
     await pipeline.queued(paper_id, "reference-resolution")
@@ -81,8 +81,8 @@ def paper_index_job_id(paper_id: str) -> str:
     return f"paper-index-{paper_id}"
 
 
-def openalex_job_id(paper_id: str) -> str:
-    return f"reference-evidence-v2-{paper_id}"
+def reference_evidence_job_id(paper_id: str) -> str:
+    return f"reference-evidence-v3-{paper_id}"
 
 
 def citation_audit_job_id(paper_id: str) -> str:

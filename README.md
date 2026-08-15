@@ -65,7 +65,7 @@ Intermediate representations are intentionally explicit:
 | CSL-JSON | Canonical bibliographic fields for every renderable reference | Partial/failed references retain raw bibliography text |
 | Manuscript revision | Immutable hashed AST snapshot plus approved operations | Validation warnings and exact parent revision |
 
-Parsing jobs have stable IDs, bounded exponential retries and durable stage status. The source PDF is never discarded on parse failure. A missing GROBID target is surfaced; low parse quality blocks citation-sensitive work; missing CSL preserves the raw marker; an unconfirmed style blocks citation mutation/export. Provider/cache state cannot rewrite the canonical parsed bibliography.
+Parsing jobs have stable IDs, bounded exponential retries and durable stage status. The source PDF is never discarded on parse failure. A missing GROBID target is surfaced; low parse quality produces prominent warnings but currently does not hard-block review; missing CSL preserves the raw marker; an unconfirmed style blocks citation mutation/export. Provider/cache state cannot rewrite the canonical parsed bibliography.
 
 ### Agent, peer review and editing
 
@@ -106,6 +106,7 @@ Core invariants and failure behavior:
 - Existing citation nodes and section identities survive prose edits. General prose changes are extractive only; new sourced citations use verified provider works and CSL-rendered markers.
 - Approval is transactional and creates the next immutable revision. Reindex/review runs after commit; queue failure becomes a visible warning and retryable stage, never a false approval failure.
 - Search is local-cache first, then both providers with throttling, bounded retries and negative caching. No key/abstract/verifier means `unverifiable`, never actionable.
+- OpenAlex and Semantic Scholar matches stay as provider-scoped evidence. They reconcile only on DOI, arXiv ID, or exact title/year/author identity; conflicts remain `ambiguous`, with abstract and identifier provenance preserved per provider.
 - Quick Read is clearly provisional. Unparseable citations, provider failures, ambiguous matches, empty searches, stale anchors and revision conflicts are returned as explicit states.
 - Export reconstructs semantic AST content. Figures, tables, display equations, notes, captions, cross-references and page typography are not first-class nodes and may be omitted or flattened; every export warns the user to compare it with the source PDF.
 
@@ -148,4 +149,4 @@ docker compose run --rm api python -m unittest discover -s tests -v
 cd frontend && bun run build
 ```
 
-The backend suite contains 51 passing tests, including an architecture path from real TEI through provider evidence, proposal, approval, citation-anchor preservation, CSL rendering, compiled PDF and editable export; it also covers paper-scoped agent tools, grounded citation selection, approval recovery, parser/provider behavior, and three real-paper fixtures.
+The backend suite contains 59 passing tests, including an architecture path from real TEI through dual-provider evidence reconciliation, fail-closed support verification, proposal, approval, citation-anchor preservation, CSL rendering, compiled PDF and editable export; it also covers provider conflicts, paper-scoped agent tools, grounded citation selection, approval recovery, parser/provider behavior, and three real-paper fixtures.

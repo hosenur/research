@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.repositories.claim_citations import ClaimCitationReviewRepository, ReferenceEvidence
 from app.schemas.paper import CitationNode, Paper
 from app.services.citation_audit import render_paragraph
+from app.services.source_search import evidence_appears_in_abstract
 
 
 REVIEW_BATCH_SIZE = 8
@@ -63,24 +64,38 @@ class ClaimCitationReviewer:
         *,
         revision: int,
     ) -> int:
-        if not self._api_key:
-            raise RuntimeError("Existing citation review requires OPENAI_API_KEY on the worker service.")
         pairs = extract_claim_citation_pairs(paper)
         evidence_by_reference = await repository.reference_evidence(paper_id)
-        scored = await self._prioritize(pairs, evidence_by_reference)
+        scored = (
+            await self._prioritize(pairs, evidence_by_reference)
+            if self._api_key
+            else [
+                (pair, None, evidence_by_reference.get(pair.reference_id))
+                for pair in pairs
+            ]
+        )
         decisions: dict[str, ClaimCitationDecision] = {}
         reviewable = [item for item in scored if item[2] and item[2].abstract]
-        for offset in range(0, len(reviewable), REVIEW_BATCH_SIZE):
-            batch = reviewable[offset : offset + REVIEW_BATCH_SIZE]
-            for decision in await self._verify_batch(batch):
-                decisions.setdefault(decision.pair_id, decision)
+        if self._api_key:
+            for offset in range(0, len(reviewable), REVIEW_BATCH_SIZE):
+                batch = reviewable[offset : offset + REVIEW_BATCH_SIZE]
+                try:
+                    batch_decisions = await self._verify_batch(batch)
+                except Exception:
+                    batch_decisions = []
+                for decision in batch_decisions:
+                    decisions.setdefault(decision.pair_id, decision)
 
         for pair, score, evidence in scored:
             decision = decisions.get(pair.id)
             if evidence is None or not evidence.abstract:
                 classification = "unverifiable"
                 confidence = 1.0
-                explanation = "No provider abstract is available, so support cannot be judged honestly."
+                explanation = (
+                    evidence.reconciliation_reason
+                    if evidence and evidence.reconciliation_status == "ambiguous"
+                    else "No provider abstract is available, so support cannot be judged honestly."
+                )
                 evidence_text = None
             elif decision is None or decision.classification not in {
                 "supported", "weak", "contradicted", "unverifiable"
@@ -94,7 +109,15 @@ class ClaimCitationReviewer:
                 confidence = decision.confidence
                 explanation = decision.explanation[:1_000]
                 evidence_text = decision.evidence.strip() or None
-                if evidence_text and evidence_text not in evidence.abstract:
+                if not evidence_text or not evidence_appears_in_abstract(
+                    evidence_text, evidence.abstract
+                ):
+                    classification = "unverifiable"
+                    confidence = 0
+                    explanation = (
+                        "The support decision is unverifiable because it did not include "
+                        "evidence found in the provider abstract."
+                    )
                     evidence_text = None
             await repository.save(
                 {
@@ -115,6 +138,16 @@ class ClaimCitationReviewer:
                     "provider_evidence": {
                         "providers": evidence.providers if evidence else [],
                         "payloads": evidence.payloads if evidence else {},
+                        "reconciliationStatus": (
+                            evidence.reconciliation_status if evidence else "unavailable"
+                        ),
+                        "reconciliationReason": (
+                            evidence.reconciliation_reason if evidence else "No provider evidence."
+                        ),
+                        "abstractProvider": evidence.abstract_provider if evidence else None,
+                        "identifierProviders": (
+                            evidence.identifier_providers if evidence else {}
+                        ),
                     },
                     "priority_score": score,
                     "classification": classification,

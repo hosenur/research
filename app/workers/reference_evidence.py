@@ -9,7 +9,7 @@ from bullmq import Job, Queue, Worker
 from app.cache.jsonl import JsonlCache
 from app.config import (
     OPENALEX_CONCURRENCY,
-    OPENALEX_QUEUE_NAME,
+    REFERENCE_EVIDENCE_QUEUE_NAME,
     CLAIM_CITATION_REVIEW_QUEUE_NAME,
     OPENALEX_TIMEOUT_SECONDS,
     SEMANTIC_SCHOLAR_TIMEOUT_SECONDS,
@@ -129,7 +129,7 @@ async def run() -> None:
                 raise
 
         worker = Worker(
-            OPENALEX_QUEUE_NAME,
+            REFERENCE_EVIDENCE_QUEUE_NAME,
             process,
             {
                 **bullmq_options(),
@@ -155,7 +155,9 @@ async def enrich_document(
         )
         completed_ids = {record.reference_id for record in existing}
         semantic_completed_ids = {record.reference_id for record in semantic_existing}
-        counters = counters_from_existing(existing, len(document.paper.references))
+        counters = counters_from_existing(
+            [*existing, *semantic_existing], len(document.paper.references)
+        )
         await job.updateProgress(counters.model_dump())
 
         semaphore = asyncio.Semaphore(OPENALEX_CONCURRENCY)
@@ -183,11 +185,13 @@ async def enrich_document(
             if resolved.reference.id in completed_ids:
                 continue
             counters.completed += 1
-            if resolved.reference.openalex_status == "matched":
+            if resolved.reconciliation.status in {"agreed", "single-provider"}:
                 counters.matched += 1
-            elif resolved.reference.openalex_status == "unmatched":
+            elif resolved.reconciliation.status == "ambiguous":
+                counters.failed += 1
+            elif any(item.status == "unmatched" for item in resolved.providers):
                 counters.unmatched += 1
-            elif resolved.reference.openalex_status == "skipped":
+            elif all(item.status == "skipped" for item in resolved.providers):
                 counters.skipped += 1
             else:
                 counters.failed += 1
@@ -197,13 +201,29 @@ async def enrich_document(
 
 
 def counters_from_existing(records: list, total: int) -> EnrichmentProgress:
+    grouped: dict[str, list] = {}
+    for record in records:
+        grouped.setdefault(record.reference_id, []).append(record)
     return EnrichmentProgress(
         total=total,
-        completed=len(records),
-        matched=sum(record.status == "matched" for record in records),
-        unmatched=sum(record.status == "unmatched" for record in records),
-        failed=sum(record.status == "error" for record in records),
-        skipped=sum(record.status == "skipped" for record in records),
+        completed=len(grouped),
+        matched=sum(
+            any(record.status == "matched" for record in group)
+            and not any(record.status == "ambiguous" for record in group)
+            for group in grouped.values()
+        ),
+        unmatched=sum(
+            all(record.status == "unmatched" for record in group)
+            for group in grouped.values()
+        ),
+        failed=sum(
+            any(record.status in {"ambiguous", "error"} for record in group)
+            for group in grouped.values()
+        ),
+        skipped=sum(
+            all(record.status == "skipped" for record in group)
+            for group in grouped.values()
+        ),
     )
 
 

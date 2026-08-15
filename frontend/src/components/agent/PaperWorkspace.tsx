@@ -39,7 +39,7 @@ import { Tab, TabList, TabPanel, Tabs } from '@/components/ui/tabs'
 import { useCitationAudit } from '@/hooks/use-citation-audit'
 import { useClaimCitationReview } from '@/hooks/use-claim-citation-review'
 import { useManuscriptEdits } from '@/hooks/use-manuscript-edits'
-import { useOpenAlexEnrichment } from '@/hooks/use-paper'
+import { useReferenceEvidence } from '@/hooks/use-paper'
 import {
   missingReferenceSource,
   preferredMissingReferenceCandidate,
@@ -103,7 +103,7 @@ export function PaperWorkspace({
   const [agentSelection, setAgentSelection] =
     useState<PaperAgentSelectionContext | null>(null)
   const focusTimer = useRef<number | null>(null)
-  const { enrichment, paper: currentPaper } = useOpenAlexEnrichment({
+  const { enrichment, paper: currentPaper } = useReferenceEvidence({
     initialRevision: documentRevision,
     paper,
     paperId,

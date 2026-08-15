@@ -9,7 +9,7 @@ from bullmq import Job, Queue, Worker
 from app.config import (
     CLAIM_AUDIT_QUEUE_NAME,
     GROBID_TIMEOUT_SECONDS,
-    OPENALEX_QUEUE_NAME,
+    REFERENCE_EVIDENCE_QUEUE_NAME,
     PAPER_INDEX_QUEUE_NAME,
     PAPER_PARSE_QUEUE_NAME,
     bullmq_options,
@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 async def run() -> None:
     artifacts = create_paper_artifact_store()
     index_queue = Queue(PAPER_INDEX_QUEUE_NAME, bullmq_options())
-    openalex_queue = Queue(OPENALEX_QUEUE_NAME, bullmq_options())
+    reference_evidence_queue = Queue(
+        REFERENCE_EVIDENCE_QUEUE_NAME, bullmq_options()
+    )
     audit_queue = Queue(CLAIM_AUDIT_QUEUE_NAME, bullmq_options())
 
     async with httpx.AsyncClient(
@@ -96,7 +98,7 @@ async def run() -> None:
                         paper_id,
                         audits=CitationAuditRepository(session),
                         index_queue=index_queue,
-                        openalex_queue=openalex_queue,
+                        reference_evidence_queue=reference_evidence_queue,
                         citation_audit_queue=audit_queue,
                         pipeline=PaperPipelineRepository(session),
                         page_count=page_count,

@@ -23,6 +23,7 @@ from app.schemas.documents import (
     CitationSourceWork,
 )
 from app.schemas.paper import ExtractionPointer
+from app.repositories.scholarly_works import scholarly_work_provenance
 from app.services.citation_audit import (
     AuditSentence,
     ModelDecision,
@@ -695,6 +696,7 @@ class CitationAuditRepository:
                         cited_by_count=work.cited_by_count,
                         providers=list(work.provider_ids),  # type: ignore[arg-type]
                         provider_ids=work.provider_ids,
+                        provenance=scholarly_work_provenance(work),
                     ),
                 )
                 for candidate, work in candidates

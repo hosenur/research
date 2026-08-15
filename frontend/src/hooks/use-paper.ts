@@ -13,7 +13,7 @@ interface EnrichmentResponse {
   }
   referenceUpdates: Array<{
     referenceId: string
-    status: 'matched' | 'unmatched' | 'error' | 'skipped'
+    status: 'matched' | 'unmatched' | 'ambiguous' | 'error' | 'skipped'
     openalex?: OpenAlexWorkJson | null
     error?: string | null
   }>
@@ -206,7 +206,7 @@ async function postJson<T>(url: string): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export function useOpenAlexEnrichment({
+export function useReferenceEvidence({
   initialRevision,
   paper,
   paperId,
@@ -218,7 +218,7 @@ export function useOpenAlexEnrichment({
   const [currentPaper, setCurrentPaper] = useState(paper)
   const [revision, setRevision] = useState(initialRevision)
   const start = useSWRMutation<{ jobId: string }>(
-    `/api/papers/${paperId}/enrichments/openalex`,
+    `/api/papers/${paperId}/enrichments/reference-evidence`,
     postJson,
   )
   const startedRef = useRef(false)
@@ -233,7 +233,7 @@ export function useOpenAlexEnrichment({
     void start.trigger()
   }, [start])
 
-  const statusUrl = `/api/papers/${paperId}/enrichments/openalex`
+  const statusUrl = `/api/papers/${paperId}/enrichments/reference-evidence`
   const poll = useSWR<EnrichmentResponse>(
     [statusUrl, revision],
     ([url, afterRevision]: [string, number]) =>

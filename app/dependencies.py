@@ -24,7 +24,7 @@ from app.config import (
     bullmq_options,
     CLAIM_AUDIT_QUEUE_NAME,
     CLAIM_CITATION_REVIEW_QUEUE_NAME,
-    OPENALEX_QUEUE_NAME,
+    REFERENCE_EVIDENCE_QUEUE_NAME,
     SOURCE_SEARCH_QUEUE_NAME,
     PAPER_INDEX_QUEUE_NAME,
     PAPER_PARSE_QUEUE_NAME,
@@ -81,8 +81,8 @@ def get_citation_audit_repository(
 
 
 @lru_cache(maxsize=1)
-def get_openalex_queue() -> Queue:
-    return Queue(OPENALEX_QUEUE_NAME, bullmq_options())
+def get_reference_evidence_queue() -> Queue:
+    return Queue(REFERENCE_EVIDENCE_QUEUE_NAME, bullmq_options())
 
 
 @lru_cache(maxsize=1)

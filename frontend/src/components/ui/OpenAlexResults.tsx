@@ -4,7 +4,7 @@ import {
   CaretDownIcon as ChevronDown,
 } from '@phosphor-icons/react'
 
-export type OpenAlexStatus = 'matched' | 'unmatched' | 'error' | 'skipped'
+export type OpenAlexStatus = 'matched' | 'unmatched' | 'ambiguous' | 'error' | 'skipped'
 
 export interface OpenAlexWorkJson {
   id: string
@@ -33,6 +33,7 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'matched', label: 'Matched' },
   { id: 'unmatched', label: 'Unmatched' },
+  { id: 'ambiguous', label: 'Ambiguous' },
   { id: 'error', label: 'Errors' },
   { id: 'skipped', label: 'Skipped' },
 ]
@@ -40,12 +41,20 @@ const FILTERS: { id: Filter; label: string }[] = [
 const STATUS_STYLES: Record<OpenAlexStatus, string> = {
   matched: 'bg-sage/12 text-sage',
   unmatched: 'bg-coral/12 text-coral',
+  ambiguous: 'bg-amber-500/10 text-amber-800',
   error: 'bg-red-500/10 text-red-800',
   skipped: 'bg-ink/6 text-ink/50',
 }
 
 function countsFor(references: EnrichedReference[]) {
-  const counts = { all: references.length, matched: 0, unmatched: 0, error: 0, skipped: 0 }
+  const counts = {
+    all: references.length,
+    matched: 0,
+    unmatched: 0,
+    ambiguous: 0,
+    error: 0,
+    skipped: 0,
+  }
   for (const reference of references) {
     if (reference.openalexStatus) counts[reference.openalexStatus] += 1
   }
