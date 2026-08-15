@@ -1,17 +1,14 @@
 import type { CSSProperties } from 'react'
 import {
+  ArrowClockwiseIcon as Refresh,
   BooksIcon,
   ChatCenteredTextIcon,
   ClipboardTextIcon,
   PlusIcon as NewPaper,
-  SpinnerGapIcon as Processing,
   WarningIcon as Warning,
 } from '@phosphor-icons/react'
 import { AgentChat } from '@/components/agent/AgentChat'
-import { PaperPipelineStatus } from '@/components/agent/PaperPipelineStatus'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import LoadingState from '@/components/ui/LoadingState'
 import {
   Sidebar,
@@ -62,88 +59,37 @@ export function PaperPendingWorkspace({
       >
         <SidebarInset className="min-h-0 min-w-0">
           <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border bg-overlay px-3 sm:px-4">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-fg">
-                {lifecycle.filename}
-              </p>
-              <p className="text-xs text-muted-fg">
-                {chatReady
-                  ? 'Chat ready · paper analysis continues'
-                  : chatIndexFailed
-                    ? 'Chat index delayed · structured parsing continues'
-                    : 'Chunking and vectorizing for chat'}
-              </p>
-            </div>
+            <p className="min-w-0 truncate text-sm font-medium text-fg">
+              {lifecycle.filename}
+            </p>
             <Button intent="outline" onPress={onReset} size="sm">
               <NewPaper />
               New paper
             </Button>
           </header>
 
-          <div className="min-h-0 flex-1 overflow-y-auto bg-bg p-4 sm:p-6">
-            <div className="mx-auto w-full max-w-2xl space-y-3">
-              <Card className="bg-overlay shadow-overlay">
-                <CardHeader
-                  title={
-                    failed
-                      ? 'Authoritative processing needs attention'
-                      : recovering
-                        ? 'Confirming paper processing'
-                        : chatReady
-                          ? 'Chat is ready'
-                          : 'Preparing chat first'
-                  }
-                  description={
-                    failed
-                      ? chatReady
-                        ? 'Indexed chat remains available while you review or retry the failed stage.'
-                        : 'Review or retry the failed stage while the workspace checks for an available index.'
-                      : recovering
-                        ? chatReady
-                          ? 'A background retry is running. Indexed chat remains available.'
-                          : 'A background retry is running. Chat will unlock when an index becomes available.'
-                        : chatReady
-                          ? 'Ask about the paper now. Citation-safe structure and review results will unlock here as background work finishes.'
-                          : 'Extracting text, creating chunks, and generating embeddings before enabling grounded chat.'
-                  }
-                />
-                <CardContent className="border-t px-4 py-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <Badge intent={failed || chatIndexFailed ? 'danger' : 'info'}>
-                      {failed || chatIndexFailed ? (
-                        <Warning data-slot="icon" />
-                      ) : chatReady ? null : (
-                        <Processing className="animate-spin" data-slot="icon" />
-                      )}
-                      {failed
-                        ? 'Some analysis is unavailable'
-                        : chatIndexFailed
-                          ? 'Chat indexing needs attention'
-                          : chatReady
-                            ? 'Provisional vector index ready'
-                            : 'Building vector index'}
-                    </Badge>
-                    {failed || chatIndexFailed ? (
-                      <Button intent="outline" onPress={onRefresh} size="sm">
-                        <Processing />
-                        Refresh status
-                      </Button>
-                    ) : null}
-                  </div>
-                  {lifecycle.error ? (
-                    <p className="mt-3 text-sm/6 text-danger-subtle-fg" role="alert">
-                      {lifecycle.error}
-                    </p>
-                  ) : (
-                    <p className="mt-3 text-sm/6 text-muted-fg">
-                      Background parsing, reference resolution, citation review, and the
-                      authoritative index continue without leaving this workspace.
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-              <PaperPipelineStatus paperId={lifecycle.id} />
-            </div>
+          <div className="flex min-h-0 flex-1 items-center justify-center bg-bg">
+            {failed ? (
+              <div className="flex max-w-sm flex-col items-center gap-3 px-6 text-center">
+                <Warning className="size-6 text-danger-subtle-fg" />
+                <p className="text-sm font-medium text-fg">
+                  Paper preview could not be prepared.
+                </p>
+                {lifecycle.error ? (
+                  <p className="text-sm/6 text-muted-fg" role="alert">
+                    {lifecycle.error}
+                  </p>
+                ) : null}
+                <Button intent="outline" onPress={onRefresh} size="sm">
+                  <Refresh />
+                  Try again
+                </Button>
+              </div>
+            ) : (
+              <UiProvider>
+                <LoadingState label="Preparing paper" variant="Drive" />
+              </UiProvider>
+            )}
           </div>
         </SidebarInset>
 
@@ -175,23 +121,14 @@ export function PaperPendingWorkspace({
                   />
                 ) : (
                   <div
-                    className="flex h-full min-h-80 flex-col items-center justify-center gap-4 px-6 text-center"
+                    className="flex h-full min-h-80 flex-col items-center justify-center gap-3 px-6 text-center"
                     role="status"
                   >
                     {chatIndexFailed ? (
                       <Warning className="size-6 text-danger-subtle-fg" />
-                    ) : (
-                      <UiProvider>
-                        <LoadingState
-                          label="Chunking and vectorizing PDF"
-                          variant="Drive"
-                        />
-                      </UiProvider>
-                    )}
-                    <p className="max-w-xs text-sm/6 text-muted-fg">
-                      {chatIndexFailed
-                        ? 'The fast chat index could not finish. Structured parsing is still running and may unlock the authoritative workspace.'
-                        : 'Grounded chat opens here automatically as soon as the first vector index is ready.'}
+                    ) : null}
+                    <p className="text-sm text-muted-fg">
+                      {chatIndexFailed ? 'Chat indexing failed.' : 'Preparing chat…'}
                     </p>
                   </div>
                 )}
