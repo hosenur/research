@@ -317,26 +317,14 @@ class PaperDocumentRepository:
             if {record.provider for record in group}
             >= {"openalex", "semantic-scholar"}
         ]
+        outcomes = [_enrichment_outcome(group) for group in complete]
         return EnrichmentProgress(
             total=total,
             completed=len(complete),
-            matched=sum(
-                any(record.status == "matched" for record in group)
-                and not any(record.status == "ambiguous" for record in group)
-                for group in complete
-            ),
-            unmatched=sum(
-                all(record.status == "unmatched" for record in group)
-                for group in complete
-            ),
-            failed=sum(
-                any(record.status in {"ambiguous", "error"} for record in group)
-                for group in complete
-            ),
-            skipped=sum(
-                all(record.status == "skipped" for record in group)
-                for group in complete
-            ),
+            matched=outcomes.count("matched"),
+            unmatched=outcomes.count("unmatched"),
+            failed=outcomes.count("failed"),
+            skipped=outcomes.count("skipped"),
         )
 
     async def save_reference_enrichment(
@@ -487,6 +475,19 @@ def _unique_reference_keys(paper: Paper) -> dict[str, str]:
         for key, reference_ids in grouped.items()
         if len(reference_ids) == 1
     }
+
+
+def _enrichment_outcome(records: list[ReferenceEnrichmentRecord]) -> str:
+    statuses = {record.status for record in records}
+    if "ambiguous" in statuses:
+        return "failed"
+    if "matched" in statuses:
+        return "matched"
+    if "unmatched" in statuses:
+        return "unmatched"
+    if statuses == {"skipped"}:
+        return "skipped"
+    return "failed"
 
 
 def _reference_cache_key(reference: Reference) -> str:
