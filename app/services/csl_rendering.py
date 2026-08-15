@@ -20,6 +20,8 @@ STRUCTURAL_EXPORT_WARNING = (
     "cross-references, multi-column/page layout, and typography are not first-class AST nodes; "
     "they may be omitted or flattened and must be checked against the original PDF."
 )
+MARKER_TARGET_START = "CSLCITATIONTARGETSTART"
+MARKER_TARGET_END = "CSLCITATIONTARGETEND"
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,14 @@ class PandocCSLRenderer:
                 "CSL-JSON is unavailable for citation source(s): " + ", ".join(missing)
             )
         markdown = citation_markdown(citation)
+        extract_target = citation.form == "numeric"
+        if extract_target:
+            markdown, seed_references = numeric_marker_context(
+                paper,
+                citation,
+                references,
+            )
+            references.update(seed_references)
         with tempfile.TemporaryDirectory(prefix="csl-marker-") as directory:
             root = Path(directory)
             references_path = root / "references.json"
@@ -79,7 +89,11 @@ class PandocCSLRenderer:
                 ],
                 markdown,
             )
-        marker = " ".join(result.split()).strip()
+        marker = (
+            extract_rendered_target(result)
+            if extract_target
+            else " ".join(result.split()).strip()
+        )
         if not marker:
             raise RuntimeError(
                 f"The CSL processor returned an empty marker for style '{style_id}'."
@@ -234,6 +248,86 @@ def citation_token(item: CitationItem, *, author_in_text: bool = False) -> str:
         suffix_parts.append(citation_affix(item.suffix))
     suffix = f", {', '.join(suffix_parts)}" if suffix_parts else ""
     return " ".join(part for part in [prefix, f"{cite}{suffix}"] if part).strip()
+
+
+def numeric_marker_context(
+    paper: Paper,
+    citation: CitationNode,
+    references: dict[str, dict],
+) -> tuple[str, dict[str, dict]]:
+    """Seed citeproc so a new numeric source follows manuscript numbering."""
+    maximum, source_by_number = existing_numeric_citation_context(paper)
+    used_source_ids: set[str] = set()
+    seed_references: dict[str, dict] = {}
+    seed_markers: list[str] = []
+    for number in range(1, maximum + 1):
+        source_id = source_by_number.get(number)
+        if (
+            source_id is None
+            or source_id not in references
+            or source_id in used_source_ids
+            or not re.fullmatch(r"[^\s@,;\[\]]+", source_id)
+        ):
+            source_id = f"csl-number-seed-{number}"
+            seed_references[source_id] = {
+                "id": source_id,
+                "type": "article",
+                "title": f"Citation number seed {number}",
+            }
+        used_source_ids.add(source_id)
+        seed_markers.append(f"[@{source_id}]")
+    target = (
+        f"{MARKER_TARGET_START} {citation_markdown(citation)} "
+        f"{MARKER_TARGET_END}"
+    )
+    return "\n\n".join([*seed_markers, target]), seed_references
+
+
+def existing_numeric_citation_context(paper: Paper) -> tuple[int, dict[int, str]]:
+    maximum = 0
+    source_by_number: dict[int, str] = {}
+    for section in paper.sections:
+        for paragraph in section.paragraphs:
+            for node in paragraph.nodes:
+                if not isinstance(node, CitationNode) or node.form != "numeric":
+                    continue
+                numbers = numeric_marker_numbers(node.raw_text)
+                if not numbers:
+                    continue
+                maximum = max(maximum, *numbers)
+                if len(numbers) != len(node.items):
+                    continue
+                for number, item in zip(numbers, node.items, strict=True):
+                    source_by_number.setdefault(number, item.source_id)
+    return maximum, source_by_number
+
+
+def numeric_marker_numbers(raw_text: str) -> list[int]:
+    numbers: list[int] = []
+    for match in re.finditer(r"[\[(]\s*([0-9,;\s\-–—]+?)\s*[\])]", raw_text):
+        for part in re.split(r"[,;]", match.group(1)):
+            token = part.strip()
+            single = re.fullmatch(r"\d+", token)
+            if single:
+                numbers.append(int(token))
+                continue
+            span = re.fullmatch(r"(\d+)\s*[\-–—]\s*(\d+)", token)
+            if span:
+                start, end = (int(value) for value in span.groups())
+                if start <= end and end - start <= 100:
+                    numbers.extend(range(start, end + 1))
+    return numbers
+
+
+def extract_rendered_target(rendered: str) -> str:
+    start = rendered.rfind(MARKER_TARGET_START)
+    if start < 0:
+        raise RuntimeError("CSL citation rendering lost the target marker start.")
+    start += len(MARKER_TARGET_START)
+    end = rendered.find(MARKER_TARGET_END, start)
+    if end < 0:
+        raise RuntimeError("CSL citation rendering lost the target marker end.")
+    return " ".join(rendered[start:end].split()).strip()
 
 
 def locator_label(label: str | None) -> str:
