@@ -64,4 +64,4 @@ docker compose run --rm api python -m unittest discover -s tests -v
 cd frontend && bun run build
 ```
 
-The backend suite contains 46 passing tests, including paper-scoped agent tools, real APA/IEEE CSL rendering, full CSL bibliographies, compiled PDF and editable exports, grounded citation selection, approval recovery, parser/provider behavior, and three real-paper fixtures.
+The backend suite contains 48 passing tests, including paper-scoped agent tools, automatic controlled citation search, real APA/IEEE CSL rendering, full CSL bibliographies, compiled PDF and editable exports, grounded citation selection, approval recovery, parser/provider behavior, and three real-paper fixtures.

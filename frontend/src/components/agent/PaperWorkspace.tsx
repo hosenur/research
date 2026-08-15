@@ -96,7 +96,7 @@ export function PaperWorkspace({
   pdfUrl,
 }: PaperWorkspaceProps) {
   const [showPdf, setShowPdf] = useState(false)
-  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>('review')
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>('agent')
   const [activeReviewCategory, setActiveReviewCategory] =
     useState<ReviewCategory>('missing')
   const [manuscriptFocus, setManuscriptFocus] = useState<ManuscriptFocus | null>(null)
@@ -120,6 +120,20 @@ export function PaperWorkspace({
     const referencesById = new Map(
       currentPaper.references.map((reference) => [reference.id, reference]),
     )
+    const paragraphOrderById = new Map<string, number>()
+    for (const section of currentPaper.sections) {
+      for (const paragraph of section.paragraphs) {
+        paragraphOrderById.set(paragraph.id, paragraphOrderById.size)
+      }
+    }
+    const inManuscriptOrder = (targets: ManuscriptSelection[]) =>
+      [...targets].sort((left, right) => {
+        const paragraphDifference =
+          (paragraphOrderById.get(left.paragraphId) ?? Number.MAX_SAFE_INTEGER) -
+          (paragraphOrderById.get(right.paragraphId) ?? Number.MAX_SAFE_INTEGER)
+        if (paragraphDifference !== 0) return paragraphDifference
+        return (left.startOffset ?? 0) - (right.startOffset ?? 0)
+      })
     const sentenceOffsetsById = new Map(
       currentPaper.sections.flatMap((section) =>
         section.paragraphs.flatMap((paragraph) =>
@@ -183,7 +197,11 @@ export function PaperWorkspace({
           })
         }),
       )
-      return { key: 'references', label: 'References', targets }
+      return {
+        key: 'references',
+        label: 'References',
+        targets: inManuscriptOrder(targets),
+      }
     }
 
     const missingSelection = (
@@ -238,7 +256,7 @@ export function PaperWorkspace({
       return {
         key: `review:${activeReviewCategory}`,
         label: reviewCategoryLabels[activeReviewCategory],
-        targets,
+        targets: inManuscriptOrder(targets),
       }
     }
 
@@ -246,7 +264,7 @@ export function PaperWorkspace({
       return {
         key: `review:${activeReviewCategory}`,
         label: reviewCategoryLabels[activeReviewCategory],
-        targets: citationAudit.dismissedFindings.map(missingSelection),
+        targets: inManuscriptOrder(citationAudit.dismissedFindings.map(missingSelection)),
       }
     }
 
@@ -288,7 +306,7 @@ export function PaperWorkspace({
     return {
       key: `review:${activeReviewCategory}`,
       label: reviewCategoryLabels[activeReviewCategory],
-      targets,
+      targets: inManuscriptOrder(targets),
     }
   }, [
     activeReviewCategory,
@@ -418,10 +436,20 @@ export function PaperWorkspace({
               selectedKey={activeWorkspaceTab}
             >
               <TabList aria-label="Paper tools" className="shrink-0 px-2">
-                <Tab id="review"><ClipboardTextIcon />Review</Tab>
                 <Tab id="agent"><ChatCenteredTextIcon />Agent</Tab>
+                <Tab id="review"><ClipboardTextIcon />Review</Tab>
                 <Tab id="references"><BooksIcon />References</Tab>
               </TabList>
+              <TabPanel className="min-h-0 overflow-hidden" id="agent">
+                <AgentChat
+                  className="h-full min-h-0"
+                  edits={manuscriptEdits}
+                  paper={currentPaper}
+                  paperId={paperId}
+                  revision={paperRevision}
+                  selectionContext={agentSelection}
+                />
+              </TabPanel>
               <TabPanel className="min-h-0 overflow-hidden" id="review">
                 <div className="flex h-full min-h-0 flex-col">
                 {(currentPaper.extraction?.preflight.pageCount ?? 0) > 80 ? (
@@ -439,16 +467,6 @@ export function PaperWorkspace({
                   />
                 </div>
                 </div>
-              </TabPanel>
-              <TabPanel className="min-h-0 overflow-hidden" id="agent">
-                <AgentChat
-                  className="h-full min-h-0"
-                  edits={manuscriptEdits}
-                  paper={currentPaper}
-                  paperId={paperId}
-                  revision={paperRevision}
-                  selectionContext={agentSelection}
-                />
               </TabPanel>
               <TabPanel className="min-h-0 overflow-hidden" id="references">
                 <MatchedReferencesPanel

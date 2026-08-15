@@ -3,7 +3,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from app.services.approved_edit_refresh import ApprovedEditRefresher
-from app.services.citation_actions import rank_opportunities
+from app.services.citation_actions import (
+    CitationActionService,
+    rank_opportunities,
+    verified_candidate_payloads,
+)
 from app.services.manuscript_revisions import is_extractive_tightening
 
 
@@ -55,6 +59,46 @@ class CitationOpportunityRankingTest(unittest.TestCase):
             topic="optimization",
         )
         self.assertEqual([item.id for item in ranked], ["f2"])
+
+    def test_only_provider_verified_candidates_are_actionable(self) -> None:
+        result = {
+            "candidates": [
+                {"candidateId": "rejected", "supportStatus": "rejected", "supportsClaim": False},
+                {"candidateId": "verified", "supportStatus": "verified", "supportsClaim": True},
+            ]
+        }
+        self.assertEqual(
+            [item["candidateId"] for item in verified_candidate_payloads(result)],
+            ["verified"],
+        )
+
+
+class VerifiedCandidateSearchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_cache_triggers_controlled_search(self) -> None:
+        service = object.__new__(CitationActionService)
+        service.candidates = AsyncMock(return_value={"candidates": []})
+        service.search = AsyncMock(
+            return_value={
+                "candidates": [
+                    {
+                        "candidateId": "verified",
+                        "supportStatus": "verified",
+                        "supportsClaim": True,
+                    }
+                ]
+            }
+        )
+        result = await service.verified_candidates(
+            "paper-1",
+            target="missing",
+            finding_id="finding-1",
+        )
+        service.search.assert_awaited_once_with(
+            "paper-1",
+            target="missing",
+            finding_id="finding-1",
+        )
+        self.assertEqual(verified_candidate_payloads(result)[0]["candidateId"], "verified")
 
 
 class _FakeQueue:

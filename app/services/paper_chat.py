@@ -31,7 +31,10 @@ from app.database.models import (
 )
 from app.database.session import get_session_factory
 from app.services.manuscript_revisions import ManuscriptEditPlanner, ManuscriptRevisionService
-from app.services.citation_actions import CitationActionService
+from app.services.citation_actions import (
+    CitationActionService,
+    verified_candidate_payloads,
+)
 from app.services.paper_index import current_index_kind, search_paper_chunks
 
 MAX_PAPER_CONTEXT_CHARACTERS = 600_000
@@ -318,7 +321,7 @@ class PaperChatService:
             finding_id = str(arguments.get("finding_id") or selection.get("findingId") or "")
             if not paper_id or target not in {"missing", "existing"} or not finding_id:
                 return {"error": "A current missing/existing citation finding is required."}
-            return await self._citation_actions.candidates(
+            return await self._citation_actions.verified_candidates(
                 paper_id, target=target, finding_id=finding_id
             )
         if name == "find_citation_opportunities":
@@ -353,6 +356,21 @@ class PaperChatService:
             action = str(arguments.get("action") or "")
             if not paper_id or target not in {"missing", "existing"} or not finding_id:
                 return {"error": "A current missing/existing citation finding is required."}
+            if not candidate_id and action in {"add", "supplement", "replace"}:
+                candidate_result = await self._citation_actions.verified_candidates(
+                    paper_id,
+                    target=target,
+                    finding_id=finding_id,
+                )
+                verified = verified_candidate_payloads(candidate_result)
+                if not verified:
+                    return {
+                        "error": (
+                            "Controlled provider search found no source verified to support "
+                            "this exact claim, so no citation proposal was created."
+                        )
+                    }
+                candidate_id = verified[0]["candidateId"]
             try:
                 result = await self._citation_actions.propose(
                     paper_id,
@@ -452,18 +470,71 @@ class PaperChatService:
     def _citation_summary(self, paper: Paper) -> dict[str, Any]:
         occurrences = 0
         cited_reference_ids: set[str] = set()
+        citation_counts: dict[str, int] = {}
         for section in paper.sections:
             for paragraph in section.paragraphs:
                 for node in paragraph.nodes:
                     if isinstance(node, CitationNode):
                         occurrences += 1
                         cited_reference_ids.update(node.source_ids)
+                        for reference_id in set(node.source_ids):
+                            citation_counts[reference_id] = citation_counts.get(reference_id, 0) + 1
+
+        references_by_id = {reference.id: reference for reference in paper.references}
+        cited_references: list[dict[str, Any]] = []
+        for reference_id in sorted(cited_reference_ids):
+            reference = references_by_id.get(reference_id)
+            if reference is None:
+                cited_references.append(
+                    {
+                        "id": reference_id,
+                        "title": None,
+                        "citationCount": citation_counts.get(reference_id, 0),
+                        "resolutionStatus": "unresolved",
+                    }
+                )
+                continue
+
+            csl = reference.csl
+            openalex = reference.openalex
+            authors = []
+            for author in csl.author if csl else []:
+                name = author.literal or " ".join(
+                    part for part in (author.given, author.family) if part
+                )
+                if name:
+                    authors.append(name)
+            issued = csl.issued.date_parts if csl and csl.issued else []
+            year = openalex.year if openalex else None
+            if year is None and issued and issued[0]:
+                year = issued[0][0]
+            doi = (openalex.doi if openalex else None) or (csl.doi if csl else None)
+            url = (openalex.landing_page_url if openalex else None) or (
+                csl.url if csl else None
+            )
+            cited_references.append(
+                {
+                    "id": reference.id,
+                    "title": (openalex.title if openalex else None)
+                    or (csl.title if csl else None)
+                    or reference.raw_fields.get("title")
+                    or reference.raw_text,
+                    "authors": authors,
+                    "year": year,
+                    "doi": doi,
+                    "url": url,
+                    "rawText": reference.raw_text,
+                    "citationCount": citation_counts.get(reference.id, 0),
+                    "resolutionStatus": "resolved",
+                }
+            )
         return {
             "inTextCitationOccurrences": occurrences,
             "uniqueCitedReferences": len(cited_reference_ids),
             "bibliographyReferences": len(paper.references),
             "uncitedBibliographyReferences": len(set(reference.id for reference in paper.references) - cited_reference_ids),
             "citedReferenceIds": sorted(cited_reference_ids),
+            "citedReferences": cited_references,
         }
 
     async def _audit_results(self, paper_id: str | None, paper: Paper | None) -> Any:
@@ -735,7 +806,7 @@ def build_openai_payload(
             "section and reference IDs that support your answer. Clearly say when the paper "
             "does not contain enough evidence. Never invent a citation, bibliographic field, "
             "or external search result. Controlled literature search is available only through search_citation_sources.\n\n"
-            "You can inspect missing citations, existing citation support, verified candidates, exact citation counts, pending proposals, and manuscript revisions. Distinguish two concepts exactly: 'missing citations' means open findings from get_citation_audit; 'uncited bibliography entries' comes from get_citation_summary. Never call uncited bibliography entries missing citations. For 'this citation' or 'this source', use CURRENT SELECTION when it identifies exactly one finding. If no unambiguous finding or candidate is selected, inspect candidates or ask the user instead of guessing. Only propose add/supplement/replace with a candidate whose supportsClaim is true and supportStatus is verified. Do not repeat an identical tool call. Use list_manuscript_revisions before answering about edit history. "
+            "You can inspect missing citations, existing citation support, verified candidates, exact citation counts, pending proposals, and manuscript revisions. Distinguish two concepts exactly: 'missing citations' means open findings from get_citation_audit; 'uncited bibliography entries' comes from get_citation_summary. Never call uncited bibliography entries missing citations. When listing references, always include each title and internal ID, plus its DOI or URL when available; never answer with internal IDs alone. For 'this citation' or 'this source', use CURRENT SELECTION when it identifies exactly one finding. If no unambiguous finding is selected, inspect the audit rather than guessing. A request to add, supplement, replace, or improve a citation authorizes read-only controlled source search: continue through candidate search and proposal creation without asking for separate permission. Candidate lookup automatically searches when verified candidates are absent, and propose_citation_change can choose the highest-ranked verified candidate when candidate_id is omitted. Stop only when controlled search reports that no source supports the exact claim. Only propose add/supplement/replace with a candidate whose supportsClaim is true and supportStatus is verified. Do not repeat an identical tool call. Use list_manuscript_revisions before answering about edit history. "
             f"{agent_mode_instructions}\n\n"
             f"PAPER INDEX METADATA:\n{paper_context}\n\n"
             f"CURRENT SELECTION:\n{json.dumps(selection_context, ensure_ascii=False, separators=(',', ':')) if selection_context else 'none'}"
@@ -788,13 +859,13 @@ PAPER_TOOLS = [
     {"type": "function", "name": "search_references", "description": "Search the paper bibliography by title, author, DOI, or raw text.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False}},
     {"type": "function", "name": "search_paper", "description": "Search semantically across indexed paper passages and return traceable section and reference IDs.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False}},
     {"type": "function", "name": "get_index_status", "description": "Check whether semantic paper indexing has completed.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
-    {"type": "function", "name": "get_citation_summary", "description": "Count in-text citation occurrences, unique cited references, bibliography entries, and uncited bibliography entries. Do not use this for missing-citation audit questions.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"type": "function", "name": "get_citation_summary", "description": "Count in-text citation occurrences, unique cited references, bibliography entries, and uncited bibliography entries. Returns complete metadata for every uniquely cited reference, including title, authors, year, DOI, URL, raw bibliography text, and citation count. Do not use this for missing-citation audit questions.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "get_citation_audit", "description": "Get the exact count and complete list of open claim-level missing-citation findings, plus findings resolved by an applied source. Use this whenever the user says missing citations.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
-    {"type": "function", "name": "get_source_candidates", "description": "Get complete, actionable candidate identifiers and support evidence for a missing or existing citation finding. Omit identifiers to use the current selection.", "parameters": {"type": "object", "properties": {"target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}}, "additionalProperties": False}},
+    {"type": "function", "name": "get_source_candidates", "description": "Get complete, actionable verified candidates for a missing or existing finding. When none are cached, this automatically performs controlled scholarly-provider search and verification; do not ask the user for separate search permission. Omit identifiers to use the current selection.", "parameters": {"type": "object", "properties": {"target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}}, "additionalProperties": False}},
     {"type": "function", "name": "find_citation_opportunities", "description": "For a broad request such as add citations to the introduction or find methodology sources, rank open audited claims in that section/topic and return verified candidates with exact finding IDs. Never invent a finding when none matches.", "parameters": {"type": "object", "properties": {"section": {"type": "string"}, "topic": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 5}}, "additionalProperties": False}},
     {"type": "function", "name": "get_existing_citation_review", "description": "Inspect supported, weak, contradicted, or unverifiable existing claim/citation findings.", "parameters": {"type": "object", "properties": {"classification": {"type": "string", "enum": ["supported", "weak", "contradicted", "unverifiable"]}, "finding_id": {"type": "string"}}, "additionalProperties": False}},
     {"type": "function", "name": "search_citation_sources", "description": "Search the controlled scholarly providers and verify candidates for one missing or existing citation finding. Omit identifiers to use the current selection.", "parameters": {"type": "object", "properties": {"target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}}, "additionalProperties": False}},
-    {"type": "function", "name": "propose_citation_change", "description": "Create an unapplied, approval-required citation proposal. Missing findings support add/remove; existing findings support supplement/replace/remove/update_metadata. Omit target/finding/candidate to use the current selection when unambiguous.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["add", "supplement", "replace", "remove", "update_metadata"]}, "target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}, "candidate_id": {"type": "string"}}, "required": ["action"], "additionalProperties": False}},
+    {"type": "function", "name": "propose_citation_change", "description": "Create an unapplied, approval-required citation proposal. Missing findings support add/remove; existing findings support supplement/replace/remove/update_metadata. For add/supplement/replace, omitting candidate_id automatically searches and selects the highest-ranked source verified for the exact claim. Omit target/finding to use the current selection when unambiguous.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["add", "supplement", "replace", "remove", "update_metadata"]}, "target": {"type": "string", "enum": ["missing", "existing"]}, "finding_id": {"type": "string"}, "candidate_id": {"type": "string"}}, "required": ["action"], "additionalProperties": False}},
     {"type": "function", "name": "get_active_edit_proposal", "description": "Read the latest manuscript proposal and its approval status.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "list_manuscript_revisions", "description": "List every immutable manuscript revision and its approved operation-level changes.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "get_manuscript_revision", "description": "Read the complete Paper AST snapshot for one historical manuscript revision.", "parameters": {"type": "object", "properties": {"revision": {"type": "integer", "minimum": 1}}, "required": ["revision"], "additionalProperties": False}},

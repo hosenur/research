@@ -172,6 +172,28 @@ class CitationActionService:
             "candidates": [self._candidate_payload(candidate, work) for candidate, work in rows],
         }
 
+    async def verified_candidates(
+        self,
+        paper_id: str,
+        *,
+        target: CitationTarget,
+        finding_id: str,
+    ) -> dict[str, Any]:
+        """Return verified candidates, running controlled search when necessary."""
+
+        result = await self.candidates(
+            paper_id,
+            target=target,
+            finding_id=finding_id,
+        )
+        if verified_candidate_payloads(result):
+            return result
+        return await self.search(
+            paper_id,
+            target=target,
+            finding_id=finding_id,
+        )
+
     async def opportunities(
         self,
         paper_id: str,
@@ -234,23 +256,12 @@ class CitationActionService:
         )[:bounded_limit]
         results: list[dict[str, Any]] = []
         for finding in ranked:
-            candidate_result = await self.candidates(
+            candidate_result = await self.verified_candidates(
                 paper_id,
                 target="missing",
                 finding_id=finding.id,
             )
             candidates = candidate_result.get("candidates", [])
-            if not any(
-                item.get("supportStatus") == "verified"
-                and item.get("supportsClaim") is True
-                for item in candidates
-            ):
-                candidate_result = await self.search(
-                    paper_id,
-                    target="missing",
-                    finding_id=finding.id,
-                )
-                candidates = candidate_result.get("candidates", [])
             results.append(
                 {
                     "findingId": finding.id,
@@ -508,4 +519,18 @@ def rank_opportunities(
             scored,
             key=lambda item: (-item[0], item[1].revision, item[1].id),
         )
+    ]
+
+
+def verified_candidate_payloads(result: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = result.get("candidates")
+    if not isinstance(candidates, list):
+        return []
+    return [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, dict)
+        and candidate.get("supportStatus") == "verified"
+        and candidate.get("supportsClaim") is True
+        and isinstance(candidate.get("candidateId"), str)
     ]
