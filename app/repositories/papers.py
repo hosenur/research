@@ -311,12 +311,7 @@ class PaperDocumentRepository:
         grouped: dict[str, list[ReferenceEnrichmentRecord]] = {}
         for record in records:
             grouped.setdefault(record.reference_id, []).append(record)
-        complete = [
-            group
-            for group in grouped.values()
-            if {record.provider for record in group}
-            >= {"openalex", "semantic-scholar"}
-        ]
+        complete = list(grouped.values())
         outcomes = [_enrichment_outcome(group) for group in complete]
         return EnrichmentProgress(
             total=total,

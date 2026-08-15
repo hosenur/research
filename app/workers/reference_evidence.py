@@ -153,9 +153,11 @@ async def enrich_document(
         semantic_existing = await documents.list_enrichments(
             paper_id, provider="semantic-scholar"
         )
-        completed_ids = {record.reference_id for record in existing}
-        semantic_completed_ids = {record.reference_id for record in semantic_existing}
-        completed_ids = completed_ids & semantic_completed_ids
+        openalex_ids = {record.reference_id for record in existing}
+        semantic_ids = {
+            record.reference_id for record in semantic_existing
+        }
+        fully_resolved_ids = openalex_ids & semantic_ids
         counters = await documents.reference_enrichment_progress(
             paper_id,
             total=len(document.paper.references),
@@ -167,7 +169,7 @@ async def enrich_document(
         pending = [
             asyncio.create_task(resolver.resolve(reference, semaphore))
             for reference in document.paper.references
-            if reference.id not in completed_ids
+            if reference.id not in fully_resolved_ids
         ]
         for result in asyncio.as_completed(pending):
             resolved = await result
@@ -183,19 +185,10 @@ async def enrich_document(
                     confidence=evidence.confidence,
                     error=evidence.error,
                 )
-            if resolved.reference.id in completed_ids:
-                continue
-            counters.completed += 1
-            if resolved.reconciliation.status in {"agreed", "single-provider"}:
-                counters.matched += 1
-            elif resolved.reconciliation.status == "ambiguous":
-                counters.failed += 1
-            elif any(item.status == "unmatched" for item in resolved.providers):
-                counters.unmatched += 1
-            elif all(item.status == "skipped" for item in resolved.providers):
-                counters.skipped += 1
-            else:
-                counters.failed += 1
+            counters = await documents.reference_enrichment_progress(
+                paper_id,
+                total=len(document.paper.references),
+            )
             await job.updateProgress(counters.model_dump())
 
         return counters.model_dump()
