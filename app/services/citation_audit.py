@@ -577,15 +577,25 @@ def render_paragraph(paragraph: Paragraph) -> str:
 def citations_in_range(paragraph: Paragraph | None, start: int, end: int) -> list[str]:
     if paragraph is None:
         return []
-    return [
-        node.id
-        for node in paragraph.nodes
-        if isinstance(node, CitationNode)
-        and node.id
-        and node.anchor
-        and node.anchor.start_offset < end
-        and node.anchor.end_offset > start
-    ]
+    paragraph_text = render_paragraph(paragraph)
+    cursor = 0
+    citation_ids: list[str] = []
+    for node in paragraph.nodes:
+        node_text = node.text if isinstance(node, TextNode) else node.raw_text
+        node_start = cursor
+        node_end = cursor + len(node_text)
+        cursor = node_end
+        if not isinstance(node, CitationNode) or not node.id:
+            continue
+        overlaps = node_start < end and node_end > start
+        follows_sentence = (
+            node_start >= end
+            and node_start - end <= 2
+            and not paragraph_text[end:node_start].strip()
+        )
+        if overlaps or follows_sentence:
+            citation_ids.append(node.id)
+    return citation_ids
 
 
 def exact_claim_span(sentence: str, claim: str) -> tuple[int, int] | None:

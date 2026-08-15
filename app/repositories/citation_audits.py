@@ -33,7 +33,7 @@ from app.services.citation_audit import (
 
 
 class _CandidateSupportDecision(Protocol):
-    supports_claim: bool
+    status: str
     confidence: float
     explanation: str
     evidence: str
@@ -454,8 +454,12 @@ class CitationAuditRepository:
             record = records_by_id.get(candidate_id)
             if record is None:
                 continue
-            record.support_status = "verified" if decision.supports_claim else "rejected"
-            record.supports_claim = decision.supports_claim
+            record.support_status = decision.status
+            record.supports_claim = (
+                True
+                if decision.status == "verified"
+                else False if decision.status == "rejected" else None
+            )
             record.support_confidence = decision.confidence
             record.support_explanation = decision.explanation[:500]
             record.support_evidence = decision.evidence[:300]

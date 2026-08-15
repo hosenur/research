@@ -244,7 +244,9 @@ class CitationSourceCandidate(ApiModel):
     rank: int = Field(ge=1)
     score: float = Field(ge=0, le=1)
     reason: str
-    support_status: Literal["not_started", "running", "verified", "rejected", "failed"] = "not_started"
+    support_status: Literal[
+        "not_started", "running", "verified", "rejected", "unverifiable", "failed"
+    ] = "not_started"
     supports_claim: bool | None = None
     support_confidence: float | None = None
     support_explanation: str | None = None

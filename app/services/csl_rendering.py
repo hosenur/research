@@ -14,6 +14,14 @@ from citeproc_styles import get_style_filepath
 from app.schemas.paper import CitationItem, CitationNode, Paper, TextNode
 
 
+STRUCTURAL_EXPORT_WARNING = (
+    "Export reconstructs title, abstract, sections, paragraphs, text, citations, and the CSL "
+    "bibliography from the Paper AST. Figures, tables, display equations, footnotes, captions, "
+    "cross-references, multi-column/page layout, and typography are not first-class AST nodes; "
+    "they may be omitted or flattened and must be checked against the original PDF."
+)
+
+
 @dataclass(frozen=True)
 class RenderedCSLDocument:
     latex: str
@@ -85,7 +93,7 @@ class PandocCSLRenderer:
             ensure_ascii=False,
             indent=2,
         ).encode("utf-8")
-        warnings: list[str] = []
+        warnings: list[str] = [STRUCTURAL_EXPORT_WARNING]
         markdown = paper_markdown(paper, references, warnings)
         selected_style = style_path(style_id)
         metadata = {

@@ -82,7 +82,7 @@ def paper_index_job_id(paper_id: str) -> str:
 
 
 def openalex_job_id(paper_id: str) -> str:
-    return f"openalex-{paper_id}"
+    return f"reference-evidence-v2-{paper_id}"
 
 
 def citation_audit_job_id(paper_id: str) -> str:
@@ -90,4 +90,4 @@ def citation_audit_job_id(paper_id: str) -> str:
 
 
 def claim_citation_review_job_id(paper_id: str) -> str:
-    return f"claim-citation-review-{paper_id}"
+    return f"claim-citation-review-v2-{paper_id}"

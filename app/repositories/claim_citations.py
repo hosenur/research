@@ -42,18 +42,57 @@ class ClaimCitationReviewRepository:
             )
             .where(ReferenceEnrichmentRecord.paper_id == paper_id)
         )
-        evidence: dict[str, ReferenceEvidence] = {}
+        grouped: dict[str, list[tuple[ReferenceEnrichmentRecord, ScholarlyWorkRecord | None]]] = {}
         for enrichment, work in rows.tuples():
+            grouped.setdefault(enrichment.reference_id, []).append((enrichment, work))
+
+        evidence: dict[str, ReferenceEvidence] = {}
+        for reference_id, candidates in grouped.items():
+            providers: set[str] = set()
+            payloads: dict[str, Any] = {}
+            best: tuple[ReferenceEnrichmentRecord, ScholarlyWorkRecord | None] | None = None
+            best_score = -1
+            for enrichment, work in candidates:
+                payload = enrichment.work_json or {}
+                if enrichment.status == "matched":
+                    providers.add(enrichment.provider)
+                if work is not None:
+                    providers.update(work.provider_ids)
+                    payloads.update(work.provider_payloads)
+                else:
+                    payloads[enrichment.provider] = payload
+                score = (
+                    30
+                    if work is not None and work.abstract
+                    else 20
+                    if work is not None
+                    else 10
+                    if enrichment.status == "matched"
+                    else 0
+                )
+                if enrichment.match_method in {"doi", "arxiv"}:
+                    score += 5
+                if enrichment.confidence == "high":
+                    score += 2
+                if score > best_score:
+                    best = (enrichment, work)
+                    best_score = score
+            if best is None:
+                continue
+            enrichment, work = best
             payload = enrichment.work_json or {}
-            providers = list((work.provider_ids if work else {}).keys())
-            evidence[enrichment.reference_id] = ReferenceEvidence(
-                reference_id=enrichment.reference_id,
+            evidence[reference_id] = ReferenceEvidence(
+                reference_id=reference_id,
                 work_id=work.id if work else enrichment.work_id,
                 title=(work.title if work else payload.get("title")),
                 abstract=(work.abstract if work else payload.get("abstract")),
-                source_url=(work.landing_page_url if work else payload.get("landingPageUrl")),
-                providers=providers or ([enrichment.provider] if enrichment.status == "matched" else []),
-                payloads=work.provider_payloads if work else {enrichment.provider: payload},
+                source_url=(
+                    work.landing_page_url
+                    if work
+                    else payload.get("landingPageUrl") or payload.get("url")
+                ),
+                providers=sorted(providers),
+                payloads=payloads,
             )
         return evidence
 

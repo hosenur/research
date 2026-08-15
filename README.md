@@ -26,9 +26,88 @@ React + SWR + TanStack AI ──HTTP / AG-UI SSE──> FastAPI
                                                                                    └── OpenAI
 ```
 
-Upload validates a PDF up to 50 MB, stores it first, creates a durable UUID, and returns `202` immediately. Quick Read and authoritative GROBID parsing run in parallel. Quick Read permits provisional Q&A; citation review, editing, and export unlock only after the stable Paper AST is ready. Workers then build the pgvector index, resolve references, review missing and existing citations, and publish results incrementally.
+### Citation parsing and rendering
 
-The Paper AST preserves sections, paragraphs, sentences, citation nodes, reference IDs, anchors, raw text, CSL-JSON, extraction quality, and source coordinates. The browser only polls durable state; refreshes and worker restarts do not restart completed work.
+The durable conversion is: validate/store PDF → Poppler layout/text preflight → optional OCR for text-poor pages → GROBID TEI → normalized `Paper` AST → citation-target resolution → CSL-JSON bibliography → style detection/confirmation → Pandoc citeproc rendering. GROBID targets are preferred; numeric, author-year, and Harvard-key fallbacks run only when needed. Ambiguous or unresolved markers remain explicit AST nodes with raw text and warnings instead of being dropped.
+
+```mermaid
+sequenceDiagram
+    actor U as Researcher
+    participant A as FastAPI
+    participant O as MinIO
+    participant Q as Postgres job queue
+    participant W as Parse worker
+    participant G as Poppler/OCR/GROBID
+    participant D as PostgreSQL
+    participant C as Pandoc citeproc
+    U->>A: Upload PDF
+    A->>O: Save immutable source
+    A->>D: Create paper UUID/status
+    A-->>U: 202 immediately
+    A->>Q: Quick-read + authoritative parse
+    Q->>W: Idempotent job
+    W->>G: Preflight, OCR if needed, produce TEI
+    G-->>W: TEI text, layout, bibliography, anchors
+    W->>O: Save immutable TEI artifact
+    W->>W: TEI → Paper AST → citation resolution → CSL-JSON
+    W->>D: Save AST, quality, warnings, revision
+    U->>A: Confirm detected CSL style
+    A->>C: Paper AST + CSL-JSON + .csl
+    C-->>U: Rendered citations/export
+```
+
+Intermediate representations are intentionally explicit:
+
+| Representation | Owns | Preserved uncertainty |
+|---|---|---|
+| Source PDF/TEI artifacts | Original bytes, coordinates and parser evidence | OCR/recovery steps and extraction failures |
+| `Paper` AST | Sections, paragraphs, sentence spans, text/citation nodes and stable IDs | Raw unresolved markers, confidence, methods and warnings |
+| CSL-JSON | Canonical bibliographic fields for every renderable reference | Partial/failed references retain raw bibliography text |
+| Manuscript revision | Immutable hashed AST snapshot plus approved operations | Validation warnings and exact parent revision |
+
+Parsing jobs have stable IDs, bounded exponential retries and durable stage status. The source PDF is never discarded on parse failure. A missing GROBID target is surfaced; low parse quality blocks citation-sensitive work; missing CSL preserves the raw marker; an unconfirmed style blocks citation mutation/export. Provider/cache state cannot rewrite the canonical parsed bibliography.
+
+### Agent, peer review and editing
+
+The agent is a typed tool loop rather than one prompt. A paper-scoped command first reads the AST/index/audits, then chooses a narrow tool. Missing-work search and cited-work resolution cross one provider seam with OpenAlex and Semantic Scholar adapters; exact requests and normalized works are cached. Candidate support is judged only from provider title/abstract evidence and fails closed when evidence or verification is unavailable. Mutations return typed, unapplied operations; deterministic code—not the model—owns anchors, citation preservation, CSL rendering, proposal conflicts, approval and history.
+
+```mermaid
+sequenceDiagram
+    actor U as Researcher
+    participant UI as Agent/Review UI
+    participant A as Tool-planning agent
+    participant S as Search/evidence module
+    participant P as OpenAlex + Semantic Scholar
+    participant R as Revision module
+    participant D as PostgreSQL/pgvector
+    participant E as Export module
+    U->>UI: Natural-language review/edit command
+    UI->>A: Paper ID + current selection + command
+    A->>D: Read AST, index, audit and active proposal
+    A->>S: Search or inspect exact claim/reference
+    S->>D: Reuse provider/request/work cache
+    S->>P: Fetch missing provider evidence
+    P-->>S: Linkable metadata + abstract
+    S->>S: Verify exact claim support (fail closed)
+    A->>R: Create typed proposal
+    R->>R: Validate revision, anchors, citation/CSL invariants
+    R-->>UI: Unapplied diff
+    U->>UI: Approve selected operations
+    UI->>R: Approval transaction
+    R->>D: Immutable revision + operation history
+    R->>D: Queue reindex + affected-section reviews
+    U->>E: Export confirmed revision/style
+    E-->>U: PDF or editable LaTeX bundle + warnings
+```
+
+Core invariants and failure behavior:
+
+- One planned proposal per paper revision; closing its modal discards that modal-owned proposal, and unrelated proposals are never silently replaced.
+- Existing citation nodes and section identities survive prose edits. General prose changes are extractive only; new sourced citations use verified provider works and CSL-rendered markers.
+- Approval is transactional and creates the next immutable revision. Reindex/review runs after commit; queue failure becomes a visible warning and retryable stage, never a false approval failure.
+- Search is local-cache first, then both providers with throttling, bounded retries and negative caching. No key/abstract/verifier means `unverifiable`, never actionable.
+- Quick Read is clearly provisional. Unparseable citations, provider failures, ambiguous matches, empty searches, stale anchors and revision conflicts are returned as explicit states.
+- Export reconstructs semantic AST content. Figures, tables, display equations, notes, captions, cross-references and page typography are not first-class nodes and may be omitted or flattened; every export warns the user to compare it with the source PDF.
 
 ## Decisions for fast interaction and reuse
 
@@ -56,6 +135,11 @@ GROBID is the authoritative parser; text-poor PDFs may use OCR. Review quality d
 
 Frontend primitives come from the Intent UI registry and licensed Beautiful UI components; registry metadata and the bundled [`LICENSE`](frontend/src/components/ui/LICENSE) are retained.
 
+## Completely implemented with AI
+
+1. Wiring the JavaScript TanStack AI frontend to the Python OpenAI backend.
+2. Parsing GROBID XML into the JSON Paper AST.
+
 ## Validation
 
 ```bash
@@ -64,4 +148,4 @@ docker compose run --rm api python -m unittest discover -s tests -v
 cd frontend && bun run build
 ```
 
-The backend suite contains 48 passing tests, including paper-scoped agent tools, automatic controlled citation search, real APA/IEEE CSL rendering, full CSL bibliographies, compiled PDF and editable exports, grounded citation selection, approval recovery, parser/provider behavior, and three real-paper fixtures.
+The backend suite contains 51 passing tests, including an architecture path from real TEI through provider evidence, proposal, approval, citation-anchor preservation, CSL rendering, compiled PDF and editable export; it also covers paper-scoped agent tools, grounded citation selection, approval recovery, parser/provider behavior, and three real-paper fixtures.

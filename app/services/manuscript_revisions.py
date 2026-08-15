@@ -42,6 +42,7 @@ from app.schemas.paper import (
     CSLDate,
     CSLItem,
     CSLName,
+    CitationAnchor,
     CitationItem,
     CitationNode,
     CitationResolution,
@@ -339,6 +340,14 @@ class ManuscriptRevisionService:
         )
         if paragraph is None:
             raise ValueError("The claim's paragraph anchor no longer exists.")
+        reference = reference_from_work(work)
+        if any(
+            isinstance(node, CitationNode) and reference.id in node.source_ids
+            for node in paragraph.nodes
+        ):
+            raise RevisionConflictError(
+                "This verified source is already cited at the audited claim."
+            )
         find_text = finding.source_text
         matches = [
             node for node in paragraph.nodes
@@ -346,7 +355,6 @@ class ManuscriptRevisionService:
         ]
         if len(matches) != 1 or matches[0].text.count(find_text) != 1:
             raise ValueError("The claim text no longer has one safe insertion point.")
-        reference = reference_from_work(work)
         command = f"Use verified source {work.title}"
         existing_proposal_id = await self._session.scalar(
             select(EditProposalRecord.id)
@@ -1625,10 +1633,13 @@ def apply_insert_citation(paper: Paper, operation: EditOperationRecord) -> None:
                 raise ValueError("The verified source no longer has one safe claim anchor.")
             index, node = matching[0]
             split_at = node.text.index(find_text) + len(find_text)
-            replacement = [TextNode(text=node.text[:split_at]), citation]
+            prefix = node.text[:split_at]
+            separator = "" if prefix.endswith((" ", "\n", "\t")) else " "
+            replacement = [TextNode(text=f"{prefix}{separator}"), citation]
             if node.text[split_at:]:
                 replacement.append(TextNode(text=node.text[split_at:]))
             paragraph.nodes[index : index + 1] = replacement
+            refresh_citation_anchors(paragraph)
             if all(item.id != reference.id for item in paper.references):
                 paper.references.append(reference)
             return
@@ -1704,6 +1715,7 @@ def apply_remove_citation(paper: Paper, operation: EditOperationRecord) -> None:
                 raise ValueError("The historical citation no longer has one exact anchor.")
             paragraph.nodes.pop(matches[0])
             paragraph.nodes = merge_adjacent_text_nodes(paragraph.nodes)
+            refresh_citation_anchors(paragraph)
             still_cited = any(
                 reference_id in node.source_ids
                 for candidate_section in paper.sections
@@ -1764,6 +1776,7 @@ def apply_citation_change(paper: Paper, operation: EditOperationRecord) -> None:
         else:
             paragraph.nodes.pop(index)
             paragraph.nodes = merge_adjacent_text_nodes(paragraph.nodes)
+        refresh_citation_anchors(paragraph)
 
     reference_payload = payload.get("add_reference") or payload.get("after_reference")
     if isinstance(reference_payload, dict):
@@ -1820,6 +1833,27 @@ def merge_adjacent_text_nodes(nodes: list[TextNode | CitationNode]) -> list[Text
         else:
             merged.append(node)
     return merged
+
+
+def refresh_citation_anchors(paragraph: object) -> None:
+    """Re-establish citation offsets after an approved structural edit."""
+    if not hasattr(paragraph, "nodes") or not hasattr(paragraph, "id"):
+        return
+    cursor = 0
+    citation_number = 0
+    for node in paragraph.nodes:
+        if isinstance(node, TextNode):
+            cursor += len(node.text)
+            continue
+        citation_number += 1
+        if not node.id:
+            node.id = f"{paragraph.id}-citation-{citation_number}"
+        node.anchor = CitationAnchor(
+            paragraph_id=paragraph.id,
+            start_offset=cursor,
+            end_offset=cursor + len(node.raw_text),
+        )
+        cursor += len(node.raw_text)
 
 
 def reference_from_work(

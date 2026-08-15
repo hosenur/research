@@ -88,6 +88,11 @@ export function ExportControl({ paperId, revision }: { paperId: string; revision
                   <SelectLabel>LaTeX project</SelectLabel>
                 </SelectItem>
               </SelectContent>
+              <Description>
+                Figures, tables, display equations, footnotes, captions, and page layout are not
+                represented as first-class manuscript nodes and may be omitted or flattened.
+                Compare the export with the original PDF.
+              </Description>
             </Select>
 
             {!exportFlow.style?.confirmed && !exportFlow.isLoadingStyle ? (

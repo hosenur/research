@@ -152,10 +152,18 @@ class PaperDocumentRepository:
         paper = self._merge(await self._current_paper(record), enrichments)
         return PaperDocument(id=record.id, revision=record.revision, paper=paper)
 
-    async def list_enrichments(self, paper_id: str) -> list[ReferenceEnrichmentRecord]:
+    async def list_enrichments(
+        self,
+        paper_id: str,
+        *,
+        provider: str = "openalex",
+    ) -> list[ReferenceEnrichmentRecord]:
         result = await self._session.execute(
             select(ReferenceEnrichmentRecord)
-            .where(ReferenceEnrichmentRecord.paper_id == paper_id)
+            .where(
+                ReferenceEnrichmentRecord.paper_id == paper_id,
+                ReferenceEnrichmentRecord.provider == provider,
+            )
             .order_by(ReferenceEnrichmentRecord.revision)
         )
         return list(result.scalars())
@@ -171,6 +179,7 @@ class PaperDocumentRepository:
             select(ReferenceEnrichmentRecord)
             .where(
                 ReferenceEnrichmentRecord.paper_id == paper_id,
+                ReferenceEnrichmentRecord.provider == "openalex",
                 ReferenceEnrichmentRecord.revision > after_revision,
             )
             .order_by(ReferenceEnrichmentRecord.revision)
@@ -185,6 +194,35 @@ class PaperDocumentRepository:
         provider: str = "openalex",
         work_id: str | None = None,
     ) -> int:
+        return await self.save_provider_enrichment(
+            paper_id,
+            reference.id,
+            provider=provider,
+            work_id=work_id,
+            status=reference.openalex_status or "error",
+            work_json=(
+                reference.openalex.model_dump(mode="json", by_alias=True)
+                if reference.openalex
+                else None
+            ),
+            match_method=(reference.openalex.match_method if reference.openalex else None),
+            confidence=(reference.openalex.confidence if reference.openalex else None),
+            error=reference.openalex_error,
+        )
+
+    async def save_provider_enrichment(
+        self,
+        paper_id: str,
+        reference_id: str,
+        *,
+        provider: str,
+        work_id: str | None,
+        status: str,
+        work_json: dict | None,
+        match_method: str | None,
+        confidence: str | None,
+        error: str | None,
+    ) -> int:
         paper_record = await self._session.scalar(
             select(PaperRecord).where(PaperRecord.id == paper_id).with_for_update()
         )
@@ -194,24 +232,20 @@ class PaperDocumentRepository:
         paper_record.revision += 1
         key = {
             "paper_id": paper_id,
-            "reference_id": reference.id,
+            "reference_id": reference_id,
             "provider": provider,
         }
         record = await self._session.get(ReferenceEnrichmentRecord, key)
         if record is None:
-            record = ReferenceEnrichmentRecord(**key, status=reference.openalex_status or "error")
+            record = ReferenceEnrichmentRecord(**key, status=status)
             self._session.add(record)
 
-        record.status = reference.openalex_status or "error"
+        record.status = status
         record.work_id = work_id
-        record.work_json = (
-            reference.openalex.model_dump(mode="json", by_alias=True)
-            if reference.openalex
-            else None
-        )
-        record.match_method = reference.openalex.match_method if reference.openalex else None
-        record.confidence = reference.openalex.confidence if reference.openalex else None
-        record.error = reference.openalex_error
+        record.work_json = work_json
+        record.match_method = match_method
+        record.confidence = confidence
+        record.error = error
         record.revision = paper_record.revision
         await self._session.commit()
         return paper_record.revision

@@ -5,7 +5,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
@@ -68,10 +68,12 @@ class _FindingContext:
     paper: Paper
 
 
-class _SourceSupportDecision(BaseModel):
+class SourceSupportDecision(BaseModel):
+    """One fail-closed support result shared by every citation-candidate path."""
+
     model_config = ConfigDict(extra="forbid")
 
-    supports_claim: bool
+    status: Literal["verified", "rejected", "unverifiable"]
     confidence: float = Field(ge=0, le=1)
     explanation: str
     evidence: str
@@ -495,13 +497,16 @@ class SourceSupportVerifier:
         claim: str,
         title: str,
         abstract: str | None,
-    ) -> _SourceSupportDecision:
+    ) -> SourceSupportDecision:
         if not self._api_key:
-            return _SourceSupportDecision(
-                supports_claim=True,
-                confidence=0.5,
-                explanation="AI verification is not configured.",
-                evidence="",
+            return unverifiable_support(
+                explanation=(
+                    "Source support is unverifiable because OPENAI_API_KEY is not configured."
+                )
+            )
+        if not abstract or not abstract.strip():
+            return unverifiable_support(
+                explanation="Source support is unverifiable because no provider abstract is available."
             )
         payload = {
             "model": self._model,
@@ -523,14 +528,47 @@ class SourceSupportVerifier:
                     "type": "json_schema",
                     "name": "source_support",
                     "strict": True,
-                    "schema": _SourceSupportDecision.model_json_schema(),
+                    "schema": SourceSupportDecision.model_json_schema(),
                 }
             },
             "max_output_tokens": 300,
             "store": False,
         }
-        response = await self._client.responses.create(**payload)
-        return _SourceSupportDecision.model_validate_json(response.output_text)
+        try:
+            response = await self._client.responses.create(**payload)
+            decision = SourceSupportDecision.model_validate_json(response.output_text)
+        except Exception as exc:
+            return unverifiable_support(
+                "Source support is unverifiable because verification failed: "
+                f"{type(exc).__name__}."
+            )
+        evidence = decision.evidence.strip()
+        if decision.status == "verified":
+            if not evidence:
+                return unverifiable_support(
+                    "Source support is unverifiable because the verifier returned no abstract evidence."
+                )
+            if not evidence_appears_in_abstract(evidence, abstract):
+                return unverifiable_support(
+                    "Source support is unverifiable because the returned evidence does not occur in the provider abstract."
+                )
+        elif evidence and not evidence_appears_in_abstract(evidence, abstract):
+            evidence = ""
+        return decision.model_copy(update={"evidence": evidence})
+
+
+def unverifiable_support(explanation: str) -> SourceSupportDecision:
+    return SourceSupportDecision(
+        status="unverifiable",
+        confidence=0,
+        explanation=explanation,
+        evidence="",
+    )
+
+
+def evidence_appears_in_abstract(evidence: str, abstract: str) -> bool:
+    normalize = lambda value: " ".join(value.casefold().split())
+    return bool(normalize(evidence)) and normalize(evidence) in normalize(abstract)
 
 
 def _claim_hash(claim_text: str) -> str:

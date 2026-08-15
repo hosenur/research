@@ -67,23 +67,31 @@ interface CitationAuditResponse {
   error?: string | null
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url)
-  if (!response.ok) throw new Error(`The API returned HTTP ${response.status}.`)
+async function jsonResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { detail?: string } | null
+    throw new Error(body?.detail ?? `The API returned HTTP ${response.status}.`)
+  }
   return response.json() as Promise<T>
 }
 
+async function fetchJson<T>(url: string): Promise<T> {
+  return jsonResponse<T>(await fetch(url))
+}
+
 async function postJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { method: 'POST' })
-  if (!response.ok) throw new Error(`The API returned HTTP ${response.status}.`)
-  return response.json() as Promise<T>
+  return jsonResponse<T>(await fetch(url, { method: 'POST' }))
 }
 
 async function decideJson<T>(url: string, { arg }: { arg: { findingId: string; candidateId: string; decision: 'accepted' | 'rejected' } }): Promise<T> {
   const endpoint = `${url}/findings/${arg.findingId}/candidates/${arg.candidateId}/decision`
-  const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: arg.decision }) })
-  if (!response.ok) throw new Error(`The API returned HTTP ${response.status}.`)
-  return response.json() as Promise<T>
+  return jsonResponse<T>(
+    await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: arg.decision }),
+    }),
+  )
 }
 
 async function removeSourceJson<T>(
@@ -100,17 +108,17 @@ async function removeSourceJson<T>(
 }
 
 async function feedbackJson<T>(url: string, { arg }: { arg: { findingId: string; candidateId?: string; feedback: 'false_positive' | 'needs_review'; note?: string } }): Promise<T> {
-  const response = await fetch(`${url}/findings/${arg.findingId}/feedback`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      feedback: arg.feedback,
-      candidateId: arg.candidateId,
-      note: arg.note,
+  return jsonResponse<T>(
+    await fetch(`${url}/findings/${arg.findingId}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        feedback: arg.feedback,
+        candidateId: arg.candidateId,
+        note: arg.note,
+      }),
     }),
-  })
-  if (!response.ok) throw new Error(`The API returned HTTP ${response.status}.`)
-  return response.json() as Promise<T>
+  )
 }
 
 export function useCitationAudit(paperId: string) {

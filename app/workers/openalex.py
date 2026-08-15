@@ -12,22 +12,27 @@ from app.config import (
     OPENALEX_QUEUE_NAME,
     CLAIM_CITATION_REVIEW_QUEUE_NAME,
     OPENALEX_TIMEOUT_SECONDS,
+    SEMANTIC_SCHOLAR_TIMEOUT_SECONDS,
     bullmq_options,
     openalex_api_key,
     openalex_cache_path,
     openalex_mailto,
     openalex_proxy,
     openalex_url,
+    semantic_scholar_api_key,
+    semantic_scholar_url,
 )
 from app.database.session import get_session_factory
 from app.repositories.openalex import OpenAlexRepository
 from app.repositories.papers import PaperDocumentRepository
 from app.repositories.pipeline import PaperPipelineRepository
 from app.repositories.scholarly_works import ScholarlyWorkRepository
+from app.repositories.semantic_scholar import SemanticScholarRepository
 from app.schemas.documents import EnrichmentProgress
 from app.schemas.paper import Reference
 from app.services.openalex import OpenAlexEnricher
 from app.services.paper_pipeline import claim_citation_review_job_id
+from app.services.reference_evidence import BibliographyEvidenceResolver
 
 
 async def run() -> None:
@@ -41,19 +46,33 @@ async def run() -> None:
             f"folio-paper-parser (mailto:{mailto})" if mailto else "folio-paper-parser/0.1"
         )
     }
-    async with httpx.AsyncClient(
-        base_url=openalex_url(),
-        timeout=OPENALEX_TIMEOUT_SECONDS,
-        headers=headers,
-        proxy=openalex_proxy(),
-    ) as client:
+    semantic_headers = {}
+    if semantic_scholar_api_key():
+        semantic_headers["x-api-key"] = semantic_scholar_api_key()
+    async with (
+        httpx.AsyncClient(
+            base_url=openalex_url(),
+            timeout=OPENALEX_TIMEOUT_SECONDS,
+            headers=headers,
+            proxy=openalex_proxy(),
+        ) as client,
+        httpx.AsyncClient(
+            base_url=semantic_scholar_url(),
+            timeout=SEMANTIC_SCHOLAR_TIMEOUT_SECONDS,
+            headers=semantic_headers,
+        ) as semantic_client,
+    ):
         provider = OpenAlexRepository(
             client,
             mailto=mailto,
             api_key=openalex_api_key(),
             cache=scholarly_works,
         )
-        enricher = OpenAlexEnricher(provider)
+        resolver = BibliographyEvidenceResolver(
+            OpenAlexEnricher(provider),
+            SemanticScholarRepository(semantic_client, scholarly_works),
+            scholarly_works,
+        )
         existing_citation_queue = Queue(
             CLAIM_CITATION_REVIEW_QUEUE_NAME, bullmq_options()
         )
@@ -67,7 +86,7 @@ async def run() -> None:
                     await PaperPipelineRepository(session).begin(
                         paper_id, "reference-resolution"
                     )
-                result = await enrich_document(job, paper_id, enricher)
+                result = await enrich_document(job, paper_id, resolver)
                 async with get_session_factory()() as session:
                     pipeline = PaperPipelineRepository(session)
                     document = await PaperDocumentRepository(session).get(paper_id)
@@ -124,48 +143,51 @@ async def run() -> None:
 async def enrich_document(
     job: Job,
     paper_id: str,
-    enricher: OpenAlexEnricher,
+    resolver: BibliographyEvidenceResolver,
 ) -> dict[str, int]:
     session_factory = get_session_factory()
-    scholarly_works = ScholarlyWorkRepository(session_factory)
     async with session_factory() as session:
         documents = PaperDocumentRepository(session)
         document = await documents.get(paper_id)
-        existing = await documents.list_enrichments(paper_id)
+        existing = await documents.list_enrichments(paper_id, provider="openalex")
+        semantic_existing = await documents.list_enrichments(
+            paper_id, provider="semantic-scholar"
+        )
         completed_ids = {record.reference_id for record in existing}
+        semantic_completed_ids = {record.reference_id for record in semantic_existing}
         counters = counters_from_existing(existing, len(document.paper.references))
         await job.updateProgress(counters.model_dump())
 
         semaphore = asyncio.Semaphore(OPENALEX_CONCURRENCY)
 
-        async def enrich(reference: Reference) -> Reference:
-            await enricher.enrich_reference(reference, semaphore)
-            return reference
-
         pending = [
-            asyncio.create_task(enrich(reference))
+            asyncio.create_task(resolver.resolve(reference, semaphore))
             for reference in document.paper.references
             if reference.id not in completed_ids
+            or reference.id not in semantic_completed_ids
         ]
         for result in asyncio.as_completed(pending):
-            reference = await result
-            work_id = None
-            if reference.openalex is not None:
-                work_id = await scholarly_works.find_by_provider_id(
-                    "openalex",
-                    reference.openalex.id,
+            resolved = await result
+            for evidence in resolved.providers:
+                await documents.save_provider_enrichment(
+                    paper_id,
+                    resolved.reference.id,
+                    provider=evidence.provider,
+                    work_id=evidence.work_id,
+                    status=evidence.status,
+                    work_json=evidence.work_json,
+                    match_method=evidence.match_method,
+                    confidence=evidence.confidence,
+                    error=evidence.error,
                 )
-            await documents.save_reference_enrichment(
-                paper_id,
-                reference,
-                work_id=work_id,
-            )
+            if resolved.reference.id in completed_ids:
+                continue
             counters.completed += 1
-            if reference.openalex_status == "matched":
+            if resolved.reference.openalex_status == "matched":
                 counters.matched += 1
-            elif reference.openalex_status == "unmatched":
+            elif resolved.reference.openalex_status == "unmatched":
                 counters.unmatched += 1
-            elif reference.openalex_status == "skipped":
+            elif resolved.reference.openalex_status == "skipped":
                 counters.skipped += 1
             else:
                 counters.failed += 1

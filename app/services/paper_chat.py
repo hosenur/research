@@ -25,6 +25,7 @@ from app.database.models import (
     EditOperationRecord,
     EditProposalRecord,
     ManuscriptRevisionRecord,
+    PaperCSLStyleRecord,
     PaperChunkRecord,
     PaperRecord,
     ScholarlyWorkRecord,
@@ -101,11 +102,13 @@ class PaperChatService:
                 except Exception:
                     # Quick-read papers do not have an authoritative manuscript yet.
                     pass
+            citation_style = await self._citation_style_context(paper_id, paper)
             payload = build_openai_payload(
                 paper,
                 request.messages,
                 self._model,
                 paper_id,
+                citation_style=citation_style,
                 selection_context=(
                     request.forwarded_props.selection_context.model_dump(
                         mode="json", by_alias=True, exclude_none=True
@@ -163,6 +166,7 @@ class PaperChatService:
                 "timestamp": round(time.time() * 1000),
             }
         )
+
         yield sse_event(
             {
                 "type": "RUN_FINISHED",
@@ -173,6 +177,28 @@ class PaperChatService:
                 "finishReason": "stop",
             }
         )
+
+    async def _citation_style_context(
+        self, paper_id: str | None, paper: Paper | None
+    ) -> dict[str, Any]:
+        detection = paper.citation_style_detection if paper else None
+        context: dict[str, Any] = {
+            "styleId": None,
+            "confirmed": False,
+            "detectedFamily": detection.family if detection else None,
+            "detectionConfidence": detection.confidence if detection else None,
+        }
+        if not paper_id:
+            return context
+        async with get_session_factory()() as session:
+            style = await session.get(PaperCSLStyleRecord, paper_id)
+        if style:
+            context.update(
+                styleId=style.style_id,
+                confirmed=style.confirmed,
+                detectedFamily=style.detected_family or context["detectedFamily"],
+            )
+        return context
 
     async def _resolve_paper_id(
         self,
@@ -505,18 +531,18 @@ class PaperChatService:
                 if name:
                     authors.append(name)
             issued = csl.issued.date_parts if csl and csl.issued else []
-            year = openalex.year if openalex else None
-            if year is None and issued and issued[0]:
-                year = issued[0][0]
-            doi = (openalex.doi if openalex else None) or (csl.doi if csl else None)
-            url = (openalex.landing_page_url if openalex else None) or (
-                csl.url if csl else None
+            year = issued[0][0] if issued and issued[0] else None
+            if year is None and openalex:
+                year = openalex.year
+            doi = csl.doi if csl else (openalex.doi if openalex else None)
+            url = (csl.url if csl else None) or (
+                openalex.landing_page_url if openalex else None
             )
             cited_references.append(
                 {
                     "id": reference.id,
-                    "title": (openalex.title if openalex else None)
-                    or (csl.title if csl else None)
+                    "title": (csl.title if csl else None)
+                    or (openalex.title if openalex else None)
                     or reference.raw_fields.get("title")
                     or reference.raw_text,
                     "authors": authors,
@@ -747,6 +773,7 @@ def build_openai_payload(
     model: str,
     paper_id: str | None = None,
     *,
+    citation_style: dict[str, Any] | None = None,
     selection_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provisional = paper is None
@@ -760,6 +787,7 @@ def build_openai_payload(
                 for section in (paper.sections if paper else [])
             ],
             "referenceIds": [reference.id for reference in (paper.references if paper else [])],
+            "citationStyle": citation_style,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -806,7 +834,7 @@ def build_openai_payload(
             "section and reference IDs that support your answer. Clearly say when the paper "
             "does not contain enough evidence. Never invent a citation, bibliographic field, "
             "or external search result. Controlled literature search is available only through search_citation_sources.\n\n"
-            "You can inspect missing citations, existing citation support, verified candidates, exact citation counts, pending proposals, and manuscript revisions. Distinguish two concepts exactly: 'missing citations' means open findings from get_citation_audit; 'uncited bibliography entries' comes from get_citation_summary. Never call uncited bibliography entries missing citations. When listing references, always include each title and internal ID, plus its DOI or URL when available; never answer with internal IDs alone. For 'this citation' or 'this source', use CURRENT SELECTION when it identifies exactly one finding. If no unambiguous finding is selected, inspect the audit rather than guessing. A request to add, supplement, replace, or improve a citation authorizes read-only controlled source search: continue through candidate search and proposal creation without asking for separate permission. Candidate lookup automatically searches when verified candidates are absent, and propose_citation_change can choose the highest-ranked verified candidate when candidate_id is omitted. Stop only when controlled search reports that no source supports the exact claim. Only propose add/supplement/replace with a candidate whose supportsClaim is true and supportStatus is verified. Do not repeat an identical tool call. Use list_manuscript_revisions before answering about edit history. "
+            "You can inspect missing citations, existing citation support, verified candidates, exact citation counts, pending proposals, and manuscript revisions. Distinguish two concepts exactly: 'missing citations' means open findings from get_citation_audit; 'uncited bibliography entries' comes from get_citation_summary. Never call uncited bibliography entries missing citations. When listing references, always include each title and internal ID, plus its DOI or URL when available; never answer with internal IDs alone. For 'this citation' or 'this source', use CURRENT SELECTION when it identifies exactly one finding. If no unambiguous finding is selected, inspect the audit rather than guessing. If the user says to accept, add, or use the first/second/etc. finding after a list, resolve that ordinal from the most recent audit result and create the proposal. Never ask the user to name or type a CSL style in chat: use the confirmed citationStyle in PAPER INDEX METADATA. If it is unconfirmed, direct the user once to the product's citation-style selector instead of asking an open-ended style question. A request to add, supplement, replace, or improve a citation authorizes read-only controlled source search: continue through candidate search and proposal creation without asking for separate permission. Candidate lookup automatically searches when verified candidates are absent, and propose_citation_change can choose the highest-ranked verified candidate when candidate_id is omitted. Stop only when controlled search reports that no source supports the exact claim. Only propose add/supplement/replace with a candidate whose supportsClaim is true and supportStatus is verified. Do not repeat an identical tool call. Use list_manuscript_revisions before answering about edit history. "
             f"{agent_mode_instructions}\n\n"
             f"PAPER INDEX METADATA:\n{paper_context}\n\n"
             f"CURRENT SELECTION:\n{json.dumps(selection_context, ensure_ascii=False, separators=(',', ':')) if selection_context else 'none'}"

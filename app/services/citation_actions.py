@@ -383,10 +383,12 @@ class CitationActionService:
                             rank=rank,
                             score=result.score,
                             reason=result.reason,
-                            support_status=(
-                                "verified" if decision.supports_claim else "rejected"
+                            support_status=decision.status,
+                            supports_claim=(
+                                True
+                                if decision.status == "verified"
+                                else False if decision.status == "rejected" else None
                             ),
-                            supports_claim=decision.supports_claim,
                             support_confidence=decision.confidence,
                             support_explanation=decision.explanation[:500],
                             support_evidence=decision.evidence[:300],

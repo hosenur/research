@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   ArrowSquareOutIcon as ExternalLink,
   BookOpenIcon as Source,
@@ -82,6 +82,7 @@ export function CitationAuditPanel({
   onFindingSelect,
   decisionPending = false,
 }: CitationAuditPanelProps) {
+  const modalProposalId = useRef<string | null>(null)
   const [activeSource, setActiveSource] = useState<ActiveSource | null>(null)
   const [preparingProposal, setPreparingProposal] = useState(false)
   const [proposalError, setProposalError] = useState<string | null>(null)
@@ -115,11 +116,20 @@ export function CitationAuditPanel({
           (activeSource.action === 'remove' ? 'remove_citation' : 'insert_citation') &&
         operation.nodeIds.includes(activeSource.paragraphId),
     )
+  const blockingProposal =
+    activeSource != null && edits?.proposal != null && !activeProposalReady
 
   async function selectSource(source: ActiveSource, proposalReady: boolean) {
     setActiveSource(source)
     setProposalError(null)
+    modalProposalId.current = proposalReady ? edits?.proposal?.id ?? null : null
     if (proposalReady) return
+    if (edits?.proposal) {
+      setProposalError(
+        `A different change is awaiting review: “${edits.proposal.command}”. Approve or discard it before preparing another citation change.`,
+      )
+      return
+    }
     setPreparingProposal(true)
     try {
       if (source.action === 'remove') {
@@ -127,7 +137,8 @@ export function CitationAuditPanel({
       } else {
         await onCandidateDecision?.(source.findingId, source.candidateId, 'accepted')
       }
-      await edits?.refreshProposal()
+      const proposal = await edits?.refreshProposal()
+      if (proposal?.status === 'planned') modalProposalId.current = proposal.id
     } catch (candidateError) {
       setProposalError(
         candidateError instanceof Error
@@ -141,13 +152,17 @@ export function CitationAuditPanel({
 
   function finishProposal() {
     if (preparingProposal || edits?.isApproving || edits?.isDiscarding) return
+    modalProposalId.current = null
     setActiveSource(null)
     setProposalError(null)
   }
 
   async function cancelProposal() {
     if (preparingProposal || edits?.isApproving || edits?.isDiscarding) return
-    const shouldDiscard = activeProposalReady && edits?.proposal?.status === 'planned'
+    const shouldDiscard =
+      edits?.proposal?.status === 'planned' &&
+      edits.proposal.id === modalProposalId.current
+    modalProposalId.current = null
     setActiveSource(null)
     setProposalError(null)
     if (shouldDiscard) await edits?.discard()
@@ -470,9 +485,13 @@ export function CitationAuditPanel({
         size="2xl"
       >
         <ModalHeader>
-          <ModalTitle>Review citation proposal</ModalTitle>
+          <ModalTitle>
+            {blockingProposal ? 'Resolve current proposal' : 'Review citation proposal'}
+          </ModalTitle>
           <ModalDescription>
-            {activeSource
+            {blockingProposal
+              ? 'Only one manuscript proposal can await approval at a time.'
+              : activeSource
               ? activeSource.action === 'remove'
                 ? `Confirm the exact manuscript change before removing ${activeSource.title}.`
                 : `Confirm the exact manuscript change before citing ${activeSource.title}.`
@@ -486,11 +505,16 @@ export function CitationAuditPanel({
               Preparing a safe citation diff…
             </div>
           ) : proposalError ? (
-            <div
-              className="rounded-lg border border-danger/30 bg-danger-subtle px-4 py-3 text-sm/6 text-danger-subtle-fg"
-              role="alert"
-            >
-              {proposalError}
+            <div className="space-y-4">
+              <div
+                className="rounded-lg border border-danger/30 bg-danger-subtle px-4 py-3 text-sm/6 text-danger-subtle-fg"
+                role="alert"
+              >
+                {proposalError}
+              </div>
+              {blockingProposal && edits ? (
+                <EditProposalThread edits={edits} onDecisionComplete={finishProposal} />
+              ) : null}
             </div>
           ) : activeProposalReady && edits ? (
             <EditProposalThread edits={edits} onDecisionComplete={finishProposal} />
