@@ -11,7 +11,7 @@ from typing import Literal
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -250,6 +250,7 @@ class ManuscriptRevisionService:
         self._session.add(proposal)
         await self._session.flush()
         operation_count = 0
+        valid_operation_count = 0
         if plan.action == "edit":
             for position, operation in enumerate(plan.operations):
                 validation_error, before, after = validate_replace_text(paper, operation)
@@ -269,6 +270,8 @@ class ManuscriptRevisionService:
                     )
                 )
                 operation_count += 1
+                if validation_error is None:
+                    valid_operation_count += 1
         elif plan.action == "restore_revision":
             operation_count = await self._add_restore_operation(
                 proposal,
@@ -276,6 +279,7 @@ class ManuscriptRevisionService:
                 base_revision,
                 plan.target_revision,
             )
+            valid_operation_count = operation_count
         elif plan.action == "revert_operations":
             operation_count = await self._add_history_revert_operations(
                 proposal,
@@ -283,10 +287,15 @@ class ManuscriptRevisionService:
                 paper,
                 plan.operation_ids,
             )
-        if operation_count == 0:
+            valid_operation_count = operation_count
+        if valid_operation_count == 0:
+            proposal.status = "invalid"
             proposal.warnings = [
                 *proposal.warnings,
-                "No safe manuscript operation was proposed. The manuscript has not changed.",
+                (
+                    "No safe manuscript operation was proposed. "
+                    "There is nothing to approve, and the manuscript has not changed."
+                ),
             ]
         await self._session.commit()
         return await self.proposal(paper_id, proposal.id)
@@ -890,6 +899,10 @@ class ManuscriptRevisionService:
                 EditProposalRecord.paper_id == paper_id,
                 EditProposalRecord.base_revision == base_revision,
                 EditProposalRecord.status == "planned",
+                exists().where(
+                    EditOperationRecord.proposal_id == EditProposalRecord.id,
+                    EditOperationRecord.validation_status == "valid",
+                ),
             )
             .order_by(EditProposalRecord.created_at.desc())
             .limit(1)

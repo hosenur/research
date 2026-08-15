@@ -58,6 +58,13 @@ async function fetchJson<T>(url: string): Promise<T> {
   return jsonResponse<T>(await fetch(url))
 }
 
+function isActionableProposal(proposal: EditProposal | null | undefined) {
+  return (
+    proposal?.status === 'planned' &&
+    proposal.operations.some((operation) => operation.validationStatus === 'valid')
+  )
+}
+
 async function approveEdit(
   url: string,
   { arg }: { arg: { proposalId: string; operationIds: string[] } },
@@ -93,12 +100,12 @@ export function useManuscriptEdits(paperId: string) {
   } = useSWR<EditProposal | null>(`${editsUrl}/latest`, fetchJson)
 
   useEffect(() => {
-    setProposal(latestProposal?.status === 'planned' ? latestProposal : null)
+    setProposal(isActionableProposal(latestProposal) ? latestProposal ?? null : null)
   }, [latestProposal])
 
   const refreshProposal = useCallback(async () => {
     const next = await mutateLatest()
-    setProposal(next?.status === 'planned' ? next : null)
+    setProposal(isActionableProposal(next) ? next ?? null : null)
     return next
   }, [mutateLatest])
 

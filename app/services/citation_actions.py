@@ -435,7 +435,16 @@ class CitationActionService:
             proposal = await ManuscriptRevisionService(
                 session, self._planner
             ).latest_proposal(paper_id)
-            return proposal if proposal and proposal.status == "planned" else None
+            return (
+                proposal
+                if proposal
+                and proposal.status == "planned"
+                and any(
+                    operation.validation_status == "valid"
+                    for operation in proposal.operations
+                )
+                else None
+            )
 
     @staticmethod
     async def _missing_finding(

@@ -487,6 +487,22 @@ class PaperChatService:
                 base_revision=paper_record.manuscript_revision,
                 target_context=selection_context,
             )
+        if proposal.status == "invalid" or not any(
+            operation.validation_status == "valid"
+            for operation in proposal.operations
+        ):
+            return {
+                "noChange": True,
+                "requiresApproval": False,
+                "applied": False,
+                "summary": proposal.summary,
+                "reasons": proposal.warnings,
+                "instruction": (
+                    "Explain plainly that no safe manuscript change could be prepared and why. "
+                    "Do not say that a proposal was generated, and do not ask the user to "
+                    "Approve or Discard anything."
+                ),
+            }
         return {
             "proposal": proposal.model_dump(mode="json", by_alias=True),
             "requiresApproval": True,
@@ -938,7 +954,7 @@ PAPER_TOOLS = [
     {"type": "function", "name": "get_active_edit_proposal", "description": "Read the latest manuscript proposal and its approval status.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "list_manuscript_revisions", "description": "List every immutable manuscript revision and its approved operation-level changes.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"type": "function", "name": "get_manuscript_revision", "description": "Read the complete Paper AST snapshot for one historical manuscript revision.", "parameters": {"type": "object", "properties": {"revision": {"type": "integer", "minimum": 1}}, "required": ["revision"], "additionalProperties": False}},
-    {"type": "function", "name": "propose_manuscript_edit", "description": "Create a safe, unapplied manuscript edit proposal when the user requests a change, restore, undo, or revert. Pass the user's request verbatim. The proposal always requires explicit approval.", "parameters": {"type": "object", "properties": {"command": {"type": "string", "minLength": 3}}, "required": ["command"], "additionalProperties": False}},
+    {"type": "function", "name": "propose_manuscript_edit", "description": "Try to create a safe, unapplied manuscript edit proposal when the user requests a change, restore, undo, or revert. Pass the user's request verbatim. A proposal with valid operations requires explicit approval; when no safe operation is possible, explain that no change was prepared and do not request approval or discard.", "parameters": {"type": "object", "properties": {"command": {"type": "string", "minLength": 3}}, "required": ["command"], "additionalProperties": False}},
 ]
 
 
