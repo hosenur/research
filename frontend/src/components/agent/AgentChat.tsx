@@ -96,6 +96,7 @@ function AgentConversation({
   const threadRef = useRef<HTMLDivElement>(null)
   const wasLoading = useRef(false)
   const refreshProposal = edits?.refreshProposal
+  const decisionInProgress = Boolean(edits?.isApproving || edits?.isDiscarding)
 
   useEffect(() => {
     if (wasLoading.current && !isLoading && refreshProposal) {
@@ -111,9 +112,13 @@ function AgentConversation({
     })
   }, [messages, isLoading, edits?.proposal, error])
 
+  useEffect(() => {
+    if (decisionInProgress && isLoading) stop()
+  }, [decisionInProgress, isLoading, stop])
+
   function submit(text = draft) {
     const prompt = text.trim()
-    if (!prompt || isLoading) return
+    if (!prompt || isLoading || decisionInProgress) return
     setDraft('')
     void sendMessage(prompt)
   }
@@ -201,6 +206,7 @@ function AgentConversation({
             <Textarea
               aria-label="Message the paper agent"
               className="max-h-40 min-h-20 rounded-none border-0 bg-transparent px-3.5 pt-3 shadow-none focus:border-0 focus:ring-0 enabled:hover:border-0"
+              disabled={decisionInProgress}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask about the paper or describe a change…"
@@ -210,7 +216,7 @@ function AgentConversation({
             <div className="flex items-center justify-end px-3 pb-3">
               <Button
                 aria-label={isLoading ? 'Stop response' : 'Send message'}
-                isDisabled={!isLoading && !draft.trim()}
+                isDisabled={decisionInProgress || (!isLoading && !draft.trim())}
                 onPress={isLoading ? stop : undefined}
                 size="sq-sm"
                 type={isLoading ? 'button' : 'submit'}

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
@@ -359,7 +359,16 @@ class ManuscriptRevisionRecord(Base):
 
 class EditProposalRecord(Base):
     __tablename__ = "edit_proposals"
-    __table_args__ = (Index("ix_edit_proposals_paper_created", "paper_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_edit_proposals_paper_created", "paper_id", "created_at"),
+        Index(
+            "uq_edit_proposals_one_planned_per_revision",
+            "paper_id",
+            "base_revision",
+            unique=True,
+            postgresql_where=text("status = 'planned'"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     paper_id: Mapped[str] = mapped_column(String(36), ForeignKey("papers.id", ondelete="CASCADE"))

@@ -120,7 +120,7 @@ export function useManuscriptEdits(paperId: string) {
       if (!proposal) return
       const rejected = await discard.trigger({ proposalId: proposal.id })
       setProposal(null)
-      await mutateLatest(rejected, { revalidate: false })
+      await mutateLatest()
       return rejected
     },
     error: approve.error ?? discard.error ?? latestError,

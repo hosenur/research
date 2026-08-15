@@ -204,7 +204,7 @@ class ManuscriptRevisionService:
         base_revision: int,
         target_context: dict[str, object] | None = None,
     ) -> EditProposal:
-        record = await self._paper_record(paper_id)
+        record = await self._paper_record(paper_id, for_update=True)
         if record.manuscript_revision != base_revision:
             raise RevisionConflictError(
                 f"The manuscript is now at revision {record.manuscript_revision}; refresh before planning."
@@ -297,7 +297,7 @@ class ManuscriptRevisionService:
         finding_id: str,
         candidate_id: str,
     ) -> EditProposal:
-        paper_record = await self._paper_record(paper_id)
+        paper_record = await self._paper_record(paper_id, for_update=True)
         row = await self._session.execute(
             select(
                 CitationAuditFindingRecord,
@@ -458,7 +458,7 @@ class ManuscriptRevisionService:
             raise ValueError(
                 "Existing citations support supplement, replace, remove, or update_metadata."
             )
-        paper_record = await self._paper_record(paper_id)
+        paper_record = await self._paper_record(paper_id, for_update=True)
         review = await self._session.scalar(
             select(ClaimCitationReviewRecord).where(
                 ClaimCitationReviewRecord.id == finding_id,
@@ -721,7 +721,7 @@ class ManuscriptRevisionService:
         finding_id: str,
         candidate_id: str,
     ) -> EditProposal:
-        paper_record = await self._paper_record(paper_id)
+        paper_record = await self._paper_record(paper_id, for_update=True)
         row = await self._session.execute(
             select(
                 CitationAuditFindingRecord,
@@ -904,6 +904,7 @@ class ManuscriptRevisionService:
             )
 
     async def discard(self, paper_id: str, proposal_id: str) -> EditProposal:
+        await self._paper_record(paper_id, for_update=True)
         proposal = await self._session.scalar(
             select(EditProposalRecord)
             .where(
@@ -914,9 +915,23 @@ class ManuscriptRevisionService:
         )
         if proposal is None:
             raise LookupError("The edit proposal was not found.")
+        if proposal.status == "rejected":
+            return await self.proposal(paper_id, proposal.id)
         if proposal.status != "planned":
             raise RevisionConflictError("This proposal is no longer awaiting a decision.")
-        proposal.status = "rejected"
+        pending = list(
+            await self._session.scalars(
+                select(EditProposalRecord)
+                .where(
+                    EditProposalRecord.paper_id == paper_id,
+                    EditProposalRecord.base_revision == proposal.base_revision,
+                    EditProposalRecord.status == "planned",
+                )
+                .with_for_update()
+            )
+        )
+        for row in pending:
+            row.status = "rejected"
         await self._session.commit()
         return await self.proposal(paper_id, proposal.id)
 
@@ -1434,8 +1449,18 @@ class ManuscriptRevisionService:
             position += 1
         return position
 
-    async def _paper_record(self, paper_id: str) -> PaperRecord:
-        record = await self._session.get(PaperRecord, paper_id)
+    async def _paper_record(
+        self, paper_id: str, *, for_update: bool = False
+    ) -> PaperRecord:
+        record = (
+            await self._session.scalar(
+                select(PaperRecord)
+                .where(PaperRecord.id == paper_id)
+                .with_for_update()
+            )
+            if for_update
+            else await self._session.get(PaperRecord, paper_id)
+        )
         if record is None:
             raise LookupError("The paper was not found.")
         return record
