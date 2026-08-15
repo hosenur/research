@@ -118,7 +118,7 @@ Core invariants and failure behavior:
 - Independent jobs run concurrently with stable IDs, bounded retries, stage-level status, and manual recovery.
 - A paper's first successful parse persists its source PDF, raw TEI, Paper AST, quick/authoritative indexes, findings, and immutable revision history. Reopening its UUID reuses that state without parsing again.
 - Provider responses are cached by exact request in PostgreSQL. Normalized scholarly works are deduplicated by provider IDs/DOI/title and searched locally before external calls, so sources discovered for one paper can support future papers.
-- Repeat uploads currently create a new paper UUID; reuse is guaranteed for an existing paper URL and the shared scholarly-work/provider cache, not by upload hash.
+- Repeat uploads receive a new paper UUID, but exact-PDF and strong DOI/arXiv/title identities hydrate prior provider matches before any external lookup.
 - Papers over 80 pages still parse and support chat, but automated review is section-scoped to bound latency and cost.
 
 ## Trust and editing rules

@@ -94,6 +94,8 @@ async def run() -> None:
 
                 await job.updateProgress({"stage": "starting-review"})
                 async with get_session_factory()() as session:
+                    documents = PaperDocumentRepository(session)
+                    await documents.hydrate_cached_reference_enrichments(paper_id)
                     await enqueue_parsed_paper_pipeline(
                         paper_id,
                         audits=CitationAuditRepository(session),

@@ -28,7 +28,6 @@ from app.repositories.papers import PaperDocumentRepository
 from app.repositories.pipeline import PaperPipelineRepository
 from app.repositories.scholarly_works import ScholarlyWorkRepository
 from app.repositories.semantic_scholar import SemanticScholarRepository
-from app.schemas.documents import EnrichmentProgress
 from app.schemas.paper import Reference
 from app.services.openalex import OpenAlexEnricher
 from app.services.paper_pipeline import claim_citation_review_job_id
@@ -148,6 +147,7 @@ async def enrich_document(
     session_factory = get_session_factory()
     async with session_factory() as session:
         documents = PaperDocumentRepository(session)
+        await documents.hydrate_cached_reference_enrichments(paper_id)
         document = await documents.get(paper_id)
         existing = await documents.list_enrichments(paper_id, provider="openalex")
         semantic_existing = await documents.list_enrichments(
@@ -155,8 +155,10 @@ async def enrich_document(
         )
         completed_ids = {record.reference_id for record in existing}
         semantic_completed_ids = {record.reference_id for record in semantic_existing}
-        counters = counters_from_existing(
-            [*existing, *semantic_existing], len(document.paper.references)
+        completed_ids = completed_ids & semantic_completed_ids
+        counters = await documents.reference_enrichment_progress(
+            paper_id,
+            total=len(document.paper.references),
         )
         await job.updateProgress(counters.model_dump())
 
@@ -166,7 +168,6 @@ async def enrich_document(
             asyncio.create_task(resolver.resolve(reference, semaphore))
             for reference in document.paper.references
             if reference.id not in completed_ids
-            or reference.id not in semantic_completed_ids
         ]
         for result in asyncio.as_completed(pending):
             resolved = await result
@@ -198,33 +199,6 @@ async def enrich_document(
             await job.updateProgress(counters.model_dump())
 
         return counters.model_dump()
-
-
-def counters_from_existing(records: list, total: int) -> EnrichmentProgress:
-    grouped: dict[str, list] = {}
-    for record in records:
-        grouped.setdefault(record.reference_id, []).append(record)
-    return EnrichmentProgress(
-        total=total,
-        completed=len(grouped),
-        matched=sum(
-            any(record.status == "matched" for record in group)
-            and not any(record.status == "ambiguous" for record in group)
-            for group in grouped.values()
-        ),
-        unmatched=sum(
-            all(record.status == "unmatched" for record in group)
-            for group in grouped.values()
-        ),
-        failed=sum(
-            any(record.status in {"ambiguous", "error"} for record in group)
-            for group in grouped.values()
-        ),
-        skipped=sum(
-            all(record.status == "skipped" for record in group)
-            for group in grouped.values()
-        ),
-    )
 
 
 if __name__ == "__main__":

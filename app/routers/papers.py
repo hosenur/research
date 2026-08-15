@@ -39,7 +39,6 @@ from app.schemas.documents import (
     CitationAuditStatus,
     CitationFeedbackRequest,
     CitationFeedbackSummary,
-    EnrichmentProgress,
     ReferenceEvidenceJob,
     ReferenceEvidenceStatus,
     PaperDocument,
@@ -835,6 +834,10 @@ async def get_reference_evidence(
     job_id = reference_evidence_job_id(paper_id)
     job = await Job.fromId(queue, job_id)
     updates = await documents.list_updates(paper_id, after_revision=after_revision)
+    stored_progress = await documents.reference_enrichment_progress(
+        paper_id,
+        total=len(document.paper.references),
+    )
     if job is None:
         return ReferenceEvidenceStatus(
             job_id=job_id,
@@ -842,16 +845,9 @@ async def get_reference_evidence(
             status="not_started",
             revision=document.revision,
             reference_updates=updates,
-            progress=EnrichmentProgress(total=len(document.paper.references)),
+            progress=stored_progress,
         )
 
-    progress_payload = job.progress if isinstance(job.progress, dict) else {}
-    progress = EnrichmentProgress.model_validate(
-        {
-            "total": len(document.paper.references),
-            **progress_payload,
-        }
-    )
     job_status = map_job_status(await job.getState())
     return ReferenceEvidenceStatus(
         job_id=job_id,
@@ -859,7 +855,7 @@ async def get_reference_evidence(
         status=job_status,
         revision=document.revision,
         reference_updates=updates,
-        progress=progress,
+        progress=stored_progress,
         error=job.failedReason if job_status == "failed" else None,
     )
 
